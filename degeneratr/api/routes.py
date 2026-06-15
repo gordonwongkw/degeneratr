@@ -150,6 +150,23 @@ async def backtest(req: BacktestRequest) -> BacktestResponse:
     return _serialize(result, req)
 
 
+class _PreloadedProvider:
+    """Serve a single symbol's already-loaded bars (so the charts backtester
+    reuses the exact series the signals were computed on — no re-fetch)."""
+
+    def __init__(self, symbol: str, bars: list[Bar]) -> None:
+        self._symbol = symbol
+        self._bars = bars
+
+    async def get_bars(self, symbol, period, begin_time, end_time):
+        return self._bars if symbol == self._symbol else []
+
+    def __getattr__(self, name):
+        async def _noop(*a, **k):
+            return [] if "bars" not in name else {}
+        return _noop
+
+
 def _epoch(dt: datetime) -> int:
     """Wall-clock seconds for lightweight-charts (treat naive bar time as UTC)."""
     return calendar.timegm(dt.timetuple())
@@ -164,7 +181,7 @@ def _line(times: list[datetime], values: list) -> list[dict]:
     return out
 
 
-async def _chart_for(symbol, period, bars: list[Bar], min_score: int) -> dict:
+async def _chart_for(symbol, period, bars: list[Bar], min_score: int, settings: Settings) -> dict:
     times = [b.time for b in bars]
     candles = [
         {"time": _epoch(b.time), "open": round(b.open, 2), "high": round(b.high, 2),
@@ -184,6 +201,27 @@ async def _chart_for(symbol, period, bars: list[Bar], min_score: int) -> dict:
                 "dir": d, "score": int(abs(sc)), "reason": " ".join(ser["votes"][i]),
             })
         prev = d
+
+    # Replay the precomputed scores through the backtester to get the actual
+    # trades (entries that passed risk/cooldown gating, and their exits).
+    from ..backtester.underlying import UnderlyingBacktester
+    from ..strategies.replay import ReplaySignalStrategy
+
+    bt = UnderlyingBacktester(
+        strategy=ReplaySignalStrategy(ser["score"], min_score),
+        settings=settings, risk=RiskManager(settings),
+        provider=_PreloadedProvider(symbol, bars),
+    )
+    result = await bt.run(symbol, times[0], times[-1], period=period)
+    trades = [
+        {"n": i + 1, "dir": "bull" if rt.right == "CALL" else "bear", "right": rt.right,
+         "entry_time": _epoch(rt.entry_time), "entry_price": rt.entry_price,
+         "exit_time": _epoch(rt.exit_time), "exit_price": rt.exit_price,
+         "qty": rt.quantity, "pnl": round(rt.pnl, 2), "pnl_pct": round(rt.pnl_pct, 2),
+         "win": rt.win, "exit_reason": rt.exit_reason, "entry_reason": rt.entry_reason}
+        for i, rt in enumerate(result.round_trips)
+    ]
+
     last = bars[-1].close if bars else 0.0
     first = bars[0].close if bars else 0.0
     return {
@@ -198,6 +236,8 @@ async def _chart_for(symbol, period, bars: list[Bar], min_score: int) -> dict:
             "bb_lower": _line(times, ser["bb_lower"]),
         },
         "signals": signals,
+        "trades": trades,
+        "net_pnl": round(sum(t["pnl"] for t in trades), 2),
     }
 
 
@@ -223,7 +263,7 @@ async def charts(period: str = "15m", source: str = "store", days: int = 60) -> 
         try:
             bars = await provider.get_bars(sym, bar_period, begin, end)
             if bars:
-                out.append(await _chart_for(sym, bar_period, bars, min_score))
+                out.append(await _chart_for(sym, bar_period, bars, min_score, settings))
         except Exception as exc:  # noqa: BLE001 - one bad symbol shouldn't sink the page
             logger.warning("chart for %s failed: %s", sym, exc)
     return {"period": period, "source": source, "symbols": [c["symbol"] for c in out], "charts": out}

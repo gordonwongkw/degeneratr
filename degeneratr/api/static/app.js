@@ -441,17 +441,51 @@ function destroyCharts() {
   $("charts-grid").innerHTML = "";
 }
 
-function makeChart(c) {
+// epoch (UTC seconds) -> "MM-DD HH:MM" matching the bar wall-clock
+const fmtEpoch = (t) => {
+  const d = new Date(t * 1000), p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+};
+const BARS_PER_DAY = { "1m": 390, "5m": 78, "15m": 26, "30m": 13, "1h": 7 };
+
+function tradeLogHTML(c) {
+  if (!c.trades.length) return `<div class="no-trades">No trades in this window.</div>`;
+  const rows = c.trades.map((t) => {
+    const cls = t.dir === "bull" ? "call" : "put";
+    return `<tr>
+      <td class="num">${t.n}</td>
+      <td><span class="badge ${cls}">${t.dir === "bull" ? "long" : "short"}</span></td>
+      <td>${fmtEpoch(t.entry_time)}</td>
+      <td class="num">${t.entry_price.toFixed(2)}</td>
+      <td>${fmtEpoch(t.exit_time)}</td>
+      <td class="num">${t.exit_price.toFixed(2)}</td>
+      <td class="num ${t.pnl >= 0 ? "pos" : "neg"}">${money2(t.pnl)}</td>
+      <td class="num ${t.pnl >= 0 ? "pos" : "neg"}">${pctStr(t.pnl_pct)}</td>
+      <td>${t.exit_reason}</td>
+    </tr>`;
+  }).join("");
+  return `<div class="trade-log-wrap"><table class="trade-log-table">
+    <thead><tr><th class="num">#</th><th>Dir</th><th>Entry</th><th class="num">In $</th>
+      <th>Exit</th><th class="num">Out $</th><th class="num">P&amp;L</th><th class="num">%</th><th>Exit</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+function makeChart(c, period) {
   const card = document.createElement("div");
   card.className = "chart-card";
   const chg = c.change_pct >= 0 ? "pos" : "neg";
+  const netCls = c.net_pnl >= 0 ? "pos" : "neg";
   card.innerHTML =
     `<div class="chart-card-head">
        <span class="sym">${c.symbol}</span>
        <span class="last">${money2(c.last)} <em class="chg ${chg}">${pct(c.change_pct)}</em></span>
-       <span class="sig-count">${c.signals.length} signals · ${c.bars} bars</span>
+       <span class="sig-count">${c.trades.length} trades · <em class="${netCls}">${money2(c.net_pnl)}</em></span>
      </div>
-     <div class="lwc" id="lwc-${c.symbol}"></div>`;
+     <div class="lwc" id="lwc-${c.symbol}"></div>
+     <details class="trade-log">
+       <summary>Trade log — ${c.trades.length} round-trips (entry → exit, P&amp;L)</summary>
+       ${tradeLogHTML(c)}
+     </details>`;
   $("charts-grid").appendChild(card);
 
   const el = card.querySelector(".lwc");
@@ -484,21 +518,38 @@ function makeChart(c) {
   addLine("vwap", 1, true);
   addLine("bb_upper", 1); addLine("bb_lower", 1);
 
-  const markers = c.signals.map((s) => ({
+  // Raw signal-onset markers (every bull/bear flip).
+  const signalMarkers = c.signals.map((s) => ({
     time: s.time,
     position: s.dir === "bull" ? "belowBar" : "aboveBar",
-    color: s.dir === "bull" ? "#21b582" : "#f0595a",
+    color: s.dir === "bull" ? "#3a7d63" : "#a14647",
     shape: s.dir === "bull" ? "arrowUp" : "arrowDown",
-    text: (s.dir === "bull" ? "▲" : "▼") + s.score,
+    text: "",
   }));
+  // Actual trade markers: entry (circle, direction) + exit (square, win/loss).
+  const tradeMarkers = [];
+  c.trades.forEach((t) => {
+    tradeMarkers.push({
+      time: t.entry_time, position: t.dir === "bull" ? "belowBar" : "aboveBar",
+      color: "#4c8dff", shape: "circle", text: "#" + t.n,
+    });
+    tradeMarkers.push({
+      time: t.exit_time, position: t.win ? "aboveBar" : "belowBar",
+      color: t.win ? "#21b582" : "#f0595a", shape: "square", text: "",
+    });
+  });
 
-  const entry = { symbol: c.symbol, el, chart, candle, series, markers };
+  const entry = { symbol: c.symbol, el, chart, candle, series, signalMarkers, tradeMarkers };
   chartsRegistry.push(entry);
   applyToggles(entry);
-  // Size once more after layout settles, then fit the full series in view.
+  // Size after layout settles, then open zoomed to the most recent ~2 days
+  // (intraday candles are unreadable when 60 days are crammed into one view).
   requestAnimationFrame(() => {
     chart.applyOptions({ width: el.clientWidth, height: el.clientHeight || 340 });
-    chart.timeScale().fitContent();
+    const perDay = BARS_PER_DAY[period] || 26;
+    const total = c.candles.length;
+    const span = Math.min(total, perDay * 2);
+    chart.timeScale().setVisibleLogicalRange({ from: total - span, to: total + 1 });
   });
 }
 
@@ -517,13 +568,18 @@ function wireChartsResize() {
 
 function applyToggles(entry) {
   const showEma = $("t-ema").checked, showVwap = $("t-vwap").checked,
-        showBb = $("t-bb").checked, showSig = $("t-sig").checked;
+        showBb = $("t-bb").checked, showSig = $("t-sig").checked,
+        showTrades = $("t-trades").checked;
   entry.series.ema_fast.applyOptions({ visible: showEma });
   entry.series.ema_slow.applyOptions({ visible: showEma });
   entry.series.vwap.applyOptions({ visible: showVwap });
   entry.series.bb_upper.applyOptions({ visible: showBb });
   entry.series.bb_lower.applyOptions({ visible: showBb });
-  entry.candle.setMarkers(showSig ? entry.markers : []);
+  let markers = [];
+  if (showSig) markers = markers.concat(entry.signalMarkers);
+  if (showTrades) markers = markers.concat(entry.tradeMarkers);
+  markers.sort((a, b) => a.time - b.time);
+  entry.candle.setMarkers(markers);
 }
 
 async function loadCharts() {
@@ -543,11 +599,13 @@ async function loadCharts() {
       return;
     }
     $("charts-empty").classList.add("hidden");
-    data.charts.forEach(makeChart);
+    data.charts.forEach((c) => makeChart(c, data.period));
     wireChartsResize();
     chartsLoaded = true;
-    const totalSig = data.charts.reduce((a, c) => a + c.signals.length, 0);
-    $("charts-status").textContent = `${data.charts.length} tickers · ${period} · ${totalSig} signal onsets · ${data.source}`;
+    const totalTrades = data.charts.reduce((a, c) => a + c.trades.length, 0);
+    const totalNet = data.charts.reduce((a, c) => a + c.net_pnl, 0);
+    $("charts-status").textContent =
+      `${data.charts.length} tickers · ${period} · ${totalTrades} trades · net ${money2(totalNet)} · ${data.source}`;
   } catch (e) {
     $("charts-status").className = "status error";
     $("charts-status").textContent = "Failed: " + e.message;
@@ -584,7 +642,7 @@ document.querySelectorAll("#scan-table thead th").forEach((th) => {
 // charts tab wiring
 $("charts-btn").addEventListener("click", loadCharts);
 ["c-period", "c-source"].forEach((id) => $(id).addEventListener("change", loadCharts));
-["t-ema", "t-vwap", "t-bb", "t-sig"].forEach((id) =>
+["t-ema", "t-vwap", "t-bb", "t-sig", "t-trades"].forEach((id) =>
   $(id).addEventListener("change", () => chartsRegistry.forEach(applyToggles)));
 document.querySelector('.tab[data-tab="charts"]').addEventListener("click", () => {
   if (!chartsLoaded) loadCharts();

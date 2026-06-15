@@ -235,3 +235,31 @@ tbody tr:last-child td { border-bottom: none; }
 .chart-card-head .chg.neg { color: var(--red); }
 .chart-card-head .sig-count { margin-left: auto; font-size: 11px; color: var(--faint); font-family: var(--mono); }
 .lwc { width: 100%; height: 340px; }
+
+
+/* ---- charts trade log ---- */
+.chart-card-head .sig-count em { font-style: normal; }
+.chart-card-head .sig-count em.pos { color: var(--green); }
+.chart-card-head .sig-count em.neg { color: var(--red); }
+.trade-log { margin-top: 6px; border-top: 1px solid var(--border); }
+.trade-log > summary {
+  cursor: pointer; padding: 8px 2px 6px; font-size: 12px; color: var(--muted);
+  list-style: none; user-select: none;
+}
+.trade-log > summary::-webkit-details-marker { display: none; }
+.trade-log > summary::before { content: "B8  "; color: var(--faint); }
+.trade-log[open] > summary::before { content: "BE  "; }
+.trade-log > summary:hover { color: var(--text); }
+.trade-log-wrap { max-height: 260px; overflow-y: auto; margin-top: 4px; }
+.trade-log-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.trade-log-table th {
+  position: sticky; top: 0; background: var(--surface-2); color: var(--muted);
+  text-align: left; font-weight: 500; padding: 5px 7px; white-space: nowrap;
+  border-bottom: 1px solid var(--border-2);
+}
+.trade-log-table td { padding: 4px 7px; border-bottom: 1px solid var(--border); white-space: nowrap; font-family: var(--mono); }
+.trade-log-table td.num { text-align: right; }
+.trade-log-table .pos { color: var(--green); }
+.trade-log-table .neg { color: var(--red); }
+.trade-log-table .badge { font-family: Inter, sans-serif; }
+.no-trades { padding: 12px 4px; color: var(--faint); font-size: 12px; }
