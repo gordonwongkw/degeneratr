@@ -56,6 +56,7 @@ class UnderlyingBacktester:
         trail_pct: float = 0.0,           # trail stop this far below peak once active (0 = off)
         edge_window: int = 0,             # circuit breaker: look back this many trades (0 = off)
         edge_cooldown: int = 0,           # ...pause new entries this many bars when they're net-losing
+        size_mode: str = "linear",        # position sizing: flat | linear | capped | peak4
         **_ignored,                       # tolerate extra kwargs (e.g. iv) from callers
     ) -> None:
         self._strategy = strategy
@@ -73,6 +74,7 @@ class UnderlyingBacktester:
         self._trail = trail_pct
         self._edge_window = edge_window
         self._edge_cooldown = edge_cooldown
+        self._size_mode = size_mode
 
     def _session_lasts(self, bars: list[Bar]) -> set[int]:
         n = len(bars)
@@ -214,13 +216,30 @@ class UnderlyingBacktester:
         return f"{sig.ticker}-{sig.right.value}"
 
     def _size(self, sig: Signal, spot: float, equity: float) -> int:
-        """Risk-based shares: risk the per-trade budget over the stop distance."""
+        """Risk-based shares: risk the per-trade budget over the stop distance.
+
+        ``size_mode`` shapes the budget by signal confluence (score 2–5):
+          flat   — same size every trade (ignore confidence)
+          linear — budget ∝ confidence (more conviction → bigger; default)
+          capped — like linear but capped at score 4 (don't over-size score 5,
+                   which backtests as the worst bucket)
+          peak4  — boost score 4, cut score 5 back to the score-2 level
+        """
         stop_dist = spot * self._sl
         if stop_dist <= 0:
             return 0
+        score = int(sig.meta.get("score", 2)) if sig.meta else 2
+        if self._size_mode == "flat":
+            factor = 0.7
+        elif self._size_mode == "capped":
+            factor = min(max(sig.confidence, 0.2), 0.9)
+        elif self._size_mode == "peak4":
+            factor = {2: 0.7, 3: 0.8, 4: 1.0, 5: 0.7}.get(score, 0.7)
+        else:  # linear
+            factor = max(sig.confidence, 0.2)
         budget = min(
             self._settings.risk_max_loss_per_trade,
-            equity * self._settings.risk_per_trade_fraction * max(sig.confidence, 0.2),
+            equity * self._settings.risk_per_trade_fraction * factor,
         )
         shares = math.floor(budget / stop_dist)
         # Leverage cap on notional.
