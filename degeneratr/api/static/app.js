@@ -539,7 +539,11 @@ function makeChart(c, period) {
     });
   });
 
-  const entry = { symbol: c.symbol, el, chart, candle, series, signalMarkers, tradeMarkers };
+  const entry = {
+    symbol: c.symbol, el, chart, candle, series, signalMarkers, tradeMarkers,
+    lastSignalTime: c.signals.length ? c.signals[c.signals.length - 1].time : 0,
+    lastBarTime: c.candles.length ? c.candles[c.candles.length - 1].time : 0,
+  };
   chartsRegistry.push(entry);
   applyToggles(entry);
   // Size after layout settles, then open zoomed to the most recent ~2 days
@@ -614,6 +618,97 @@ async function loadCharts() {
   }
 }
 
+// ============ LIVE MODE (poll Tiger during market hours) ============
+let liveTimer = null;
+const LIVE_INTERVAL_MS = 20000;
+
+function setLiveUI(on) {
+  const btn = $("live-btn");
+  btn.classList.toggle("active", on);
+  btn.querySelector(".live-label").textContent = on ? "Live" : "Go live";
+}
+
+function flashCard(entry, dir) {
+  const card = entry.el.closest(".chart-card");
+  card.classList.remove("flash-bull", "flash-bear");
+  // reflow so the animation restarts even on back-to-back signals
+  void card.offsetWidth;
+  card.classList.add(dir === "bull" ? "flash-bull" : "flash-bear");
+  setTimeout(() => card.classList.remove("flash-bull", "flash-bear"), 1800);
+}
+
+async function liveTick() {
+  try {
+    const period = $("c-period").value;
+    const data = await (await fetch(`/api/charts?period=${period}&source=live&days=3&light=1`)).json();
+    const now = new Date();
+    const newSignals = [];
+    data.charts.forEach((c) => {
+      const e = chartsRegistry.find((x) => x.symbol === c.symbol);
+      if (!e) return;
+      // Incrementally update only the current/new bars (update() can't touch
+      // history). Wrapped so an out-of-order point never breaks the tick.
+      const from = e.lastBarTime || 0;
+      c.candles.filter((b) => b.time >= from).forEach((bar) => {
+        try { e.candle.update(bar); } catch (x) {}
+      });
+      ["ema_fast", "ema_slow", "vwap", "bb_upper", "bb_lower"].forEach((k) =>
+        (c.indicators[k] || []).filter((p) => p.time >= from).forEach((p) => {
+          try { e.series[k].update(p); } catch (x) {}
+        }));
+      if (c.candles.length) e.lastBarTime = c.candles[c.candles.length - 1].time;
+      // Rebuild signal markers (trade markers are left from the last full load).
+      e.signalMarkers = c.signals.map((s) => ({
+        time: s.time, position: s.dir === "bull" ? "belowBar" : "aboveBar",
+        color: s.dir === "bull" ? "#3a7d63" : "#a14647",
+        shape: s.dir === "bull" ? "arrowUp" : "arrowDown", text: "",
+      }));
+      applyToggles(e);
+      // Header: live last price + change.
+      const card = e.el.closest(".chart-card");
+      card.querySelector(".last").innerHTML =
+        `${money2(c.last)} <em class="chg ${c.change_pct >= 0 ? "pos" : "neg"}">${pct(c.change_pct)}</em>`;
+      // New signal since last tick?
+      const latest = c.signals.length ? c.signals[c.signals.length - 1] : null;
+      if (latest && latest.time > (e.lastSignalTime || 0)) {
+        e.lastSignalTime = latest.time;
+        flashCard(e, latest.dir);
+        newSignals.push(`${c.symbol} ${latest.dir.toUpperCase()}`);
+      }
+    });
+    const mkt = data.market_open ? "market open" : "market closed";
+    $("charts-status").innerHTML =
+      `<span class="live-pulse"></span> LIVE · updated ${now.toLocaleTimeString()} · ${mkt}` +
+      (newSignals.length ? ` · <b>new: ${newSignals.join(", ")}</b>` : "");
+    if (newSignals.length && window.Notification && Notification.permission === "granted") {
+      new Notification("degeneratr signal", { body: newSignals.join(", ") });
+    }
+  } catch (err) {
+    $("charts-status").className = "status error";
+    $("charts-status").textContent = "Live update failed: " + err.message;
+  }
+}
+
+async function toggleLive() {
+  if (liveTimer) {  // turn OFF
+    clearInterval(liveTimer);
+    liveTimer = null;
+    setLiveUI(false);
+    $("charts-status").textContent = "Live stopped.";
+    return;
+  }
+  // turn ON: full reload from live, then poll
+  if (window.Notification && Notification.permission === "default") {
+    try { Notification.requestPermission(); } catch (e) {}
+  }
+  $("c-source").value = "live";
+  await loadCharts();
+  if (!chartsLoaded) return;
+  setLiveUI(true);
+  await liveTick();
+  liveTimer = setInterval(liveTick, LIVE_INTERVAL_MS);
+}
+
 // ---- wire up ----
 async function loadCoverage() {
   try {
@@ -640,8 +735,12 @@ document.querySelectorAll("#scan-table thead th").forEach((th) => {
   });
 });
 // charts tab wiring
-$("charts-btn").addEventListener("click", loadCharts);
-["c-period", "c-source"].forEach((id) => $(id).addEventListener("change", loadCharts));
+$("charts-btn").addEventListener("click", () => { if (liveTimer) toggleLive(); loadCharts(); });
+$("live-btn").addEventListener("click", toggleLive);
+["c-period", "c-source"].forEach((id) => $(id).addEventListener("change", () => {
+  if (liveTimer) { clearInterval(liveTimer); liveTimer = null; setLiveUI(false); }
+  loadCharts();
+}));
 ["t-ema", "t-vwap", "t-bb", "t-sig", "t-trades"].forEach((id) =>
   $(id).addEventListener("change", () => chartsRegistry.forEach(applyToggles)));
 document.querySelector('.tab[data-tab="charts"]').addEventListener("click", () => {

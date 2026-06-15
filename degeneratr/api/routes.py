@@ -181,7 +181,8 @@ def _line(times: list[datetime], values: list) -> list[dict]:
     return out
 
 
-async def _chart_for(symbol, period, bars: list[Bar], min_score: int, settings: Settings) -> dict:
+async def _chart_for(symbol, period, bars: list[Bar], min_score: int, settings: Settings,
+                     light: bool = False) -> dict:
     times = [b.time for b in bars]
     candles = [
         {"time": _epoch(b.time), "open": round(b.open, 2), "high": round(b.high, 2),
@@ -203,24 +204,27 @@ async def _chart_for(symbol, period, bars: list[Bar], min_score: int, settings: 
         prev = d
 
     # Replay the precomputed scores through the backtester to get the actual
-    # trades (entries that passed risk/cooldown gating, and their exits).
-    from ..backtester.underlying import UnderlyingBacktester
-    from ..strategies.replay import ReplaySignalStrategy
+    # trades. Skipped in `light` mode (live polling wants signals fast, not a
+    # full backtest every tick).
+    trades: list[dict] = []
+    if not light:
+        from ..backtester.underlying import UnderlyingBacktester
+        from ..strategies.replay import ReplaySignalStrategy
 
-    bt = UnderlyingBacktester(
-        strategy=ReplaySignalStrategy(ser["score"], min_score),
-        settings=settings, risk=RiskManager(settings),
-        provider=_PreloadedProvider(symbol, bars),
-    )
-    result = await bt.run(symbol, times[0], times[-1], period=period)
-    trades = [
-        {"n": i + 1, "dir": "bull" if rt.right == "CALL" else "bear", "right": rt.right,
-         "entry_time": _epoch(rt.entry_time), "entry_price": rt.entry_price,
-         "exit_time": _epoch(rt.exit_time), "exit_price": rt.exit_price,
-         "qty": rt.quantity, "pnl": round(rt.pnl, 2), "pnl_pct": round(rt.pnl_pct, 2),
-         "win": rt.win, "exit_reason": rt.exit_reason, "entry_reason": rt.entry_reason}
-        for i, rt in enumerate(result.round_trips)
-    ]
+        bt = UnderlyingBacktester(
+            strategy=ReplaySignalStrategy(ser["score"], min_score),
+            settings=settings, risk=RiskManager(settings),
+            provider=_PreloadedProvider(symbol, bars),
+        )
+        result = await bt.run(symbol, times[0], times[-1], period=period)
+        trades = [
+            {"n": i + 1, "dir": "bull" if rt.right == "CALL" else "bear", "right": rt.right,
+             "entry_time": _epoch(rt.entry_time), "entry_price": rt.entry_price,
+             "exit_time": _epoch(rt.exit_time), "exit_price": rt.exit_price,
+             "qty": rt.quantity, "pnl": round(rt.pnl, 2), "pnl_pct": round(rt.pnl_pct, 2),
+             "win": rt.win, "exit_reason": rt.exit_reason, "entry_reason": rt.entry_reason}
+            for i, rt in enumerate(result.round_trips)
+        ]
 
     last = bars[-1].close if bars else 0.0
     first = bars[0].close if bars else 0.0
@@ -241,9 +245,22 @@ async def _chart_for(symbol, period, bars: list[Bar], min_score: int, settings: 
     }
 
 
+def _market_open(now_utc: datetime) -> bool:
+    """Rough US regular-session check: Mon–Fri, 13:30–20:00 UTC (9:30–16:00 ET)."""
+    if now_utc.weekday() >= 5:
+        return False
+    mins = now_utc.hour * 60 + now_utc.minute
+    return 13 * 60 + 30 <= mins <= 20 * 60
+
+
 @router.get("/charts")
-async def charts(period: str = "15m", source: str = "store", days: int = 60) -> dict:
-    """Per-ticker candles + indicator lines + signal markers for the watchlist."""
+async def charts(period: str = "15m", source: str = "store", days: int = 60,
+                 light: bool = False) -> dict:
+    """Per-ticker candles + indicator lines + signal markers for the watchlist.
+
+    ``light=true`` skips the per-ticker backtest (signals only) for fast live
+    polling. ``source=live`` pulls fresh (uncached) data so the latest bar moves.
+    """
     settings = get_settings()
     bar_period = _PERIODS.get(period)
     if bar_period is None:
@@ -253,7 +270,9 @@ async def charts(period: str = "15m", source: str = "store", days: int = 60) -> 
 
         provider = StoreProvider(BarStore(settings.bar_store_path))
     else:
-        provider = get_provider(settings)
+        # Live: build a fresh provider with caching off so each poll re-fetches
+        # the forming bar from Tiger instead of serving a stale cached window.
+        provider = get_provider(settings.model_copy(update={"bar_cache_ttl": 0}))
     end = datetime.now()
     begin = end - timedelta(days=days)
     symbols = settings.watchlist_symbols
@@ -263,10 +282,12 @@ async def charts(period: str = "15m", source: str = "store", days: int = 60) -> 
         try:
             bars = await provider.get_bars(sym, bar_period, begin, end)
             if bars:
-                out.append(await _chart_for(sym, bar_period, bars, min_score, settings))
+                out.append(await _chart_for(sym, bar_period, bars, min_score, settings, light=light))
         except Exception as exc:  # noqa: BLE001 - one bad symbol shouldn't sink the page
             logger.warning("chart for %s failed: %s", sym, exc)
-    return {"period": period, "source": source, "symbols": [c["symbol"] for c in out], "charts": out}
+    return {"period": period, "source": source, "light": light,
+            "market_open": _market_open(datetime.utcnow()),
+            "symbols": [c["symbol"] for c in out], "charts": out}
 
 
 @router.get("/scan", response_model=ScanResponse)
