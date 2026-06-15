@@ -46,7 +46,7 @@ CONFIGS = [
 ]
 
 _STRAT_KEYS = {"adx_min", "ema_trend", "time_windows", "min_score"}
-_EXIT_KEYS = {"breakeven_after", "trail_pct"}
+_EXIT_KEYS = {"breakeven_after", "trail_pct", "edge_window", "edge_cooldown"}
 
 
 def metrics(rts):

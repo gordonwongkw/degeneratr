@@ -54,6 +54,8 @@ class UnderlyingBacktester:
         gap_minutes: int = 60,
         breakeven_after: float = 0.0,     # once +this move, stop moves to entry (0 = off)
         trail_pct: float = 0.0,           # trail stop this far below peak once active (0 = off)
+        edge_window: int = 0,             # circuit breaker: look back this many trades (0 = off)
+        edge_cooldown: int = 0,           # ...pause new entries this many bars when they're net-losing
         **_ignored,                       # tolerate extra kwargs (e.g. iv) from callers
     ) -> None:
         self._strategy = strategy
@@ -69,6 +71,8 @@ class UnderlyingBacktester:
         self._gap_minutes = gap_minutes
         self._breakeven = breakeven_after
         self._trail = trail_pct
+        self._edge_window = edge_window
+        self._edge_cooldown = edge_cooldown
 
     def _session_lasts(self, bars: list[Bar]) -> set[int]:
         n = len(bars)
@@ -105,6 +109,8 @@ class UnderlyingBacktester:
         cooldown: dict[str, int] = {}
         signals_generated = 0
         signals_rejected = 0
+        recent_pnls: list[float] = []   # circuit breaker: this ticker's recent trade P&Ls
+        pause_until = -1                # ...block new entries through this bar index
         self._risk.reset_daily()
         current_day = bars[warmup].time.date()
 
@@ -112,6 +118,7 @@ class UnderlyingBacktester:
             now = bars[i].time
             spot = bars[i].close
             is_session_end = i in session_last
+            closed_this_bar = False
             if now.date() != current_day:
                 self._risk.reset_daily()
                 current_day = now.date()
@@ -143,12 +150,22 @@ class UnderlyingBacktester:
                 realized += pnl
                 self._risk.record_realized_pnl(pnl)
                 round_trips.append(self._round_trip(tr, now, spot, pnl, reason))
+                recent_pnls.append(pnl)
+                closed_this_bar = True
                 key = self._key(tr.signal)
                 cooldown[key] = i + self._cooldown_bars
             open_trades = still
 
+            # ---- circuit breaker: pause entries after a cold streak ----
+            # Re-checked only when a trade just closed (so the window can't freeze
+            # us out permanently); a probe trade after the cooldown re-tests edge.
+            if (closed_this_bar and self._edge_window
+                    and len(recent_pnls) >= self._edge_window
+                    and sum(recent_pnls[-self._edge_window:]) < 0):
+                pause_until = i + self._edge_cooldown
+
             # ---- entries ----
-            if not is_session_end and not self._risk.kill_switch_tripped():
+            if not is_session_end and not self._risk.kill_switch_tripped() and i > pause_until:
                 signals = await self._strategy.generate_signals(ticker, bars[: i + 1], [], empty_iv)
                 equity = cash + sum(
                     (spot - t.entry_price) * t.direction * t.shares for t in open_trades
