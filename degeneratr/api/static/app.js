@@ -493,8 +493,11 @@ function makeChart(c, period) {
     width: el.clientWidth, height: el.clientHeight || 340,
     layout: { background: { color: "transparent" }, textColor: "#939bab", fontFamily: "Inter, sans-serif" },
     grid: { vertLines: { color: "rgba(128,128,128,0.05)" }, horzLines: { color: "rgba(128,128,128,0.07)" } },
-    timeScale: { timeVisible: true, secondsVisible: false, borderColor: "rgba(128,128,128,0.18)" },
-    rightPriceScale: { borderColor: "rgba(128,128,128,0.18)" },
+    timeScale: {
+      timeVisible: true, secondsVisible: false, borderColor: "rgba(128,128,128,0.18)",
+      barSpacing: 13, minBarSpacing: 4, rightOffset: 6,  // readable candle width, can't go hairline
+    },
+    rightPriceScale: { borderColor: "rgba(128,128,128,0.18)", autoScale: true },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
   });
 
@@ -543,17 +546,60 @@ function makeChart(c, period) {
     symbol: c.symbol, el, chart, candle, series, signalMarkers, tradeMarkers,
     lastSignalTime: c.signals.length ? c.signals[c.signals.length - 1].time : 0,
     lastBarTime: c.candles.length ? c.candles[c.candles.length - 1].time : 0,
+    sigByTime: new Map(c.signals.map((s) => [s.time, s])),
+    entryByTime: new Map(c.trades.map((t) => [t.entry_time, t])),
+    exitByTime: new Map(c.trades.map((t) => [t.exit_time, t])),
   };
   chartsRegistry.push(entry);
   applyToggles(entry);
-  // Size after layout settles, then open zoomed to the most recent ~2 days
-  // (intraday candles are unreadable when 60 days are crammed into one view).
+  wireTooltip(entry);
+  // Size after layout settles, then anchor to the most recent bars. Candle
+  // width is governed by barSpacing/minBarSpacing, so it stays readable and
+  // scales with the chart instead of cramming the whole window in.
   requestAnimationFrame(() => {
     chart.applyOptions({ width: el.clientWidth, height: el.clientHeight || 340 });
-    const perDay = BARS_PER_DAY[period] || 26;
-    const total = c.candles.length;
-    const span = Math.min(total, perDay * 2);
-    chart.timeScale().setVisibleLogicalRange({ from: total - span, to: total + 1 });
+    chart.timeScale().scrollToRealTime();
+  });
+}
+
+// ---- crosshair tooltip: OHLC + any signal/trade at the hovered bar ----
+function chartTooltipEl() {
+  let el = document.getElementById("lwc-tt");
+  if (!el) { el = document.createElement("div"); el.id = "lwc-tt"; el.className = "lwc-tt"; document.body.appendChild(el); }
+  return el;
+}
+function fmtFull(t) {
+  const d = new Date(t * 1000), p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+function wireTooltip(entry) {
+  const tt = chartTooltipEl();
+  entry.chart.subscribeCrosshairMove((param) => {
+    if (!param.time || !param.point || param.point.x < 0 || param.point.y < 0) {
+      tt.style.opacity = 0; return;
+    }
+    const o = param.seriesData.get(entry.candle);
+    if (!o) { tt.style.opacity = 0; return; }
+    const up = o.close >= o.open;
+    let html = `<div class="tt-h">${entry.symbol} · ${fmtFull(param.time)}</div>` +
+      `<div class="tt-ohlc"><span>O ${o.open.toFixed(2)}</span><span>H ${o.high.toFixed(2)}</span>` +
+      `<span>L ${o.low.toFixed(2)}</span><span class="${up ? "pos" : "neg"}">C ${o.close.toFixed(2)}</span></div>`;
+    const sig = entry.sigByTime.get(param.time);
+    if (sig) html += `<div class="tt-sig ${sig.dir}">${sig.dir === "bull" ? "▲ BULL" : "▼ BEAR"} signal · score ${sig.score}` +
+      `${sig.reason ? ` · ${sig.reason}` : ""}</div>`;
+    const en = entry.entryByTime.get(param.time);
+    if (en) html += `<div class="tt-tr">● Entry #${en.n} ${en.dir === "bull" ? "LONG" : "SHORT"} @ ${en.entry_price.toFixed(2)}</div>`;
+    const ex = entry.exitByTime.get(param.time);
+    if (ex) html += `<div class="tt-tr ${ex.win ? "pos" : "neg"}">■ Exit #${ex.n} · ${money2(ex.pnl)} · ${ex.exit_reason}</div>`;
+    tt.innerHTML = html;
+    const rect = entry.el.getBoundingClientRect();
+    tt.style.opacity = 1;
+    let x = rect.left + window.scrollX + param.point.x + 16;
+    const y = rect.top + window.scrollY + param.point.y + 14;
+    if (x + tt.offsetWidth > window.scrollX + document.documentElement.clientWidth - 8) {
+      x = rect.left + window.scrollX + param.point.x - tt.offsetWidth - 16;
+    }
+    tt.style.left = x + "px"; tt.style.top = y + "px";
   });
 }
 
@@ -663,6 +709,7 @@ async function liveTick() {
         color: s.dir === "bull" ? "#3a7d63" : "#a14647",
         shape: s.dir === "bull" ? "arrowUp" : "arrowDown", text: "",
       }));
+      e.sigByTime = new Map(c.signals.map((s) => [s.time, s]));
       applyToggles(e);
       // Header: live last price + change.
       const card = e.el.closest(".chart-card");

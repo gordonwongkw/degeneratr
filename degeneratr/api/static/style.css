@@ -310,3 +310,23 @@ tbody tr:last-child td { border-bottom: none; }
   15% { box-shadow: 0 0 0 3px rgba(240,89,90,0.5); border-color: var(--red); }
   100% { box-shadow: 0 0 0 0 rgba(240,89,90,0.0); border-color: var(--border); }
 }
+
+
+/* ---- charts crosshair tooltip ---- */
+.lwc-tt {
+  position: absolute; z-index: 50; pointer-events: none; opacity: 0;
+  background: color-mix(in srgb, var(--surface-3) 97%, transparent);
+  border: 1px solid var(--border-2); border-radius: 8px; padding: 8px 11px;
+  font-size: 11.5px; color: var(--text); min-width: 188px;
+  box-shadow: 0 10px 28px rgba(0,0,0,0.4); transition: opacity .1s; font-family: var(--mono);
+}
+.lwc-tt .tt-h { font-size: 11px; color: var(--muted); margin-bottom: 6px; font-family: Inter, sans-serif; font-weight: 600; }
+.lwc-tt .tt-ohlc { display: flex; gap: 11px; flex-wrap: wrap; color: var(--muted); }
+.lwc-tt .tt-ohlc .pos { color: var(--green); }
+.lwc-tt .tt-ohlc .neg { color: var(--red); }
+.lwc-tt .tt-sig { margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); font-weight: 600; }
+.lwc-tt .tt-sig.bull { color: var(--green); }
+.lwc-tt .tt-sig.bear { color: var(--red); }
+.lwc-tt .tt-tr { margin-top: 5px; color: var(--muted); }
+.lwc-tt .tt-tr.pos { color: var(--green); }
+.lwc-tt .tt-tr.neg { color: var(--red); }
