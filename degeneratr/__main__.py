@@ -79,7 +79,11 @@ async def _run_scan(args: argparse.Namespace) -> None:
 
 
 async def _run_backtest(args: argparse.Namespace) -> None:
-    from .backtester.engine import Backtester
+    # Price-action strategy on the underlying; P&L is derived purely from the
+    # stock's move (no options data). Same engine the dashboard / API use, so the
+    # CLI and web results agree. Live execution still buys the closest-OTM 0DTE
+    # CALL (bull) / PUT (bear) — that's the broker layer, not the backtest P&L.
+    from .backtester.underlying import UnderlyingBacktester
 
     cls = STRATEGY_REGISTRY.get(args.strategy)
     if cls is None:
@@ -91,7 +95,7 @@ async def _run_backtest(args: argparse.Namespace) -> None:
         from .storage import BarStore, StoreProvider
 
         provider = StoreProvider(BarStore(get_settings().bar_store_path))
-    bt = Backtester(strategy=cls(), provider=provider)
+    bt = UnderlyingBacktester(strategy=cls(), provider=provider)
     end = datetime.now()
     begin = end - timedelta(days=args.days)
     result = await bt.run(args.ticker, begin, end, period=BarPeriod.FIVE_MINUTES)
