@@ -57,6 +57,7 @@ class UnderlyingBacktester:
         edge_window: int = 0,             # circuit breaker: look back this many trades (0 = off)
         edge_cooldown: int = 0,           # ...pause new entries this many bars when they're net-losing
         size_mode: str = "linear",        # position sizing: flat | linear | capped | peak4
+        size_weights: Optional[dict] = None,  # explicit {score: factor} (overrides size_mode)
         **_ignored,                       # tolerate extra kwargs (e.g. iv) from callers
     ) -> None:
         self._strategy = strategy
@@ -75,6 +76,7 @@ class UnderlyingBacktester:
         self._edge_window = edge_window
         self._edge_cooldown = edge_cooldown
         self._size_mode = size_mode
+        self._size_weights = size_weights
 
     def _session_lasts(self, bars: list[Bar]) -> set[int]:
         n = len(bars)
@@ -229,7 +231,9 @@ class UnderlyingBacktester:
         if stop_dist <= 0:
             return 0
         score = int(sig.meta.get("score", 2)) if sig.meta else 2
-        if self._size_mode == "flat":
+        if self._size_weights is not None:
+            factor = self._size_weights.get(score, 0.7)
+        elif self._size_mode == "flat":
             factor = 0.7
         elif self._size_mode == "capped":
             factor = min(max(sig.confidence, 0.2), 0.9)
