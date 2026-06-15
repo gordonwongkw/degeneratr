@@ -23,7 +23,7 @@ import pandas as pd
 import pandas_ta as ta
 
 from ..data.base import Bar, IVAnalysis, OptionContract, OptionRight
-from ..indicators.technical import bars_to_frame, bollinger, ema, macd, rsi, vwap
+from ..indicators.technical import bars_to_frame
 from .base import Signal, SignalAction, Strategy
 
 
@@ -55,6 +55,16 @@ class PriceActionStrategy(Strategy):
         use_bbands: bool = True,
         min_score: int = 2,
         min_bars: int = 30,
+        # ---- success-rate filters ----
+        # ADX(15) regime gate is ON by default: a 60-day out-of-sample test
+        # showed it's the one filter that robustly lifts win rate (52.7→54.3%),
+        # expectancy and profit factor by skipping chop. The others (trend EMA,
+        # time-of-day, breakeven/trailing) did NOT generalize out-of-sample and
+        # stay off. See scripts/sweep_improve.py.
+        adx_len: int = 14,
+        adx_min: float = 15.0,       # regime: require ADX >= this (0 = off)
+        ema_trend: int = 0,          # trend align: long only > EMA(n), short only < (0 = off)
+        time_windows: Optional[list[tuple[str, str]]] = None,  # ET "HH:MM" entry windows (None = off)
     ) -> None:
         self.ema_fast = ema_fast
         self.ema_slow = ema_slow
@@ -74,6 +84,16 @@ class PriceActionStrategy(Strategy):
         self.use_bbands = use_bbands
         self.min_score = min_score
         self.min_bars = min_bars
+        self.adx_len = adx_len
+        self.adx_min = adx_min
+        self.ema_trend = ema_trend
+        # Parse "HH:MM" windows into (start_minute, end_minute) of the ET day.
+        self.time_windows = None
+        if time_windows:
+            self.time_windows = [
+                (int(a[:2]) * 60 + int(a[3:]), int(b[:2]) * 60 + int(b[3:]))
+                for a, b in time_windows
+            ]
 
     async def generate_signals(
         self,
@@ -84,69 +104,18 @@ class PriceActionStrategy(Strategy):
     ) -> list[Signal]:
         if len(bars) < self.min_bars:
             return []
-        frame = bars_to_frame(bars)
-        if frame.empty:
-            return []
-        close = float(frame["close"].iloc[-1])
-
-        bull = 0
-        bear = 0
-        votes: list[str] = []
-
-        if self.use_ema:
-            ef = ema(frame, self.ema_fast)
-            es = ema(frame, self.ema_slow)
-            if ef is not None and es is not None:
-                if ef > es:
-                    bull += 1; votes.append("EMA↑")
-                elif ef < es:
-                    bear += 1; votes.append("EMA↓")
-
-        if self.use_vwap:
-            vw = vwap(frame)
-            if vw is not None:
-                if close > vw:
-                    bull += 1; votes.append("VWAP↑")
-                elif close < vw:
-                    bear += 1; votes.append("VWAP↓")
-
-        if self.use_macd:
-            m = macd(frame, self.macd_fast, self.macd_slow, self.macd_signal)
-            h = m["histogram"]
-            if h is not None:
-                if h > 0:
-                    bull += 1; votes.append("MACD+")
-                elif h < 0:
-                    bear += 1; votes.append("MACD-")
-
-        if self.use_rsi:
-            r = rsi(frame, self.rsi_len)["value"]
-            if r is not None:
-                if r >= self.rsi_bull:
-                    bull += 1; votes.append(f"RSI {r:.0f}↑")
-                elif r <= self.rsi_bear:
-                    bear += 1; votes.append(f"RSI {r:.0f}↓")
-
-        if self.use_bbands:
-            bb = bollinger(frame, self.bb_len, self.bb_std)
-            up, lo = bb["upper"], bb["lower"]
-            if up is not None and lo is not None:
-                if self.bb_mode == "breakout":
-                    if close > up:
-                        bull += 1; votes.append("BB breakout↑")
-                    elif close < lo:
-                        bear += 1; votes.append("BB breakout↓")
-                else:  # reversion: fade the band
-                    if close <= lo:
-                        bull += 1; votes.append("BB reversion↑")
-                    elif close >= up:
-                        bear += 1; votes.append("BB reversion↓")
-
-        net = bull - bear
-        if net >= self.min_score:
-            return [self._signal(ticker, OptionRight.CALL, net, votes, close)]
-        if -net >= self.min_score:
-            return [self._signal(ticker, OptionRight.PUT, -net, votes, close)]
+        # Delegate to the vectorized series() so the live path, the backtester,
+        # the charts endpoint and the sweep all share one implementation — incl.
+        # the ADX regime gate. (series() is causal, so the last value here equals
+        # what this method computed bar-by-bar before the refactor.)
+        ser = self.series(bars)
+        score = ser["score"][-1]
+        votes = ser["votes"][-1]
+        close = bars[-1].close
+        if score >= self.min_score:
+            return [self._signal(ticker, OptionRight.CALL, score, votes, close)]
+        if -score >= self.min_score:
+            return [self._signal(ticker, OptionRight.PUT, -score, votes, close)]
         return []
 
     def series(self, bars: list[Bar]) -> dict:
@@ -184,6 +153,15 @@ class PriceActionStrategy(Strategy):
         else:
             bb_lower = bb_upper = pd.Series([pd.NA] * n, index=close.index)
 
+        # ---- optional success-rate gates (computed once, applied per bar) ----
+        adx_l = None
+        if self.adx_min > 0:
+            adx_df = ta.adx(f["high"], f["low"], close, length=self.adx_len)
+            adx_col = adx_df.iloc[:, 0] if adx_df is not None and not adx_df.empty else pd.Series([pd.NA] * n, index=close.index)
+            adx_l = list(adx_col)
+        emat_l = list(ta.ema(close, length=self.ema_trend)) if self.ema_trend > 0 else None
+        times = [b.time for b in bars]
+
         scores: list[int] = []
         votes: list[list[str]] = []
         ef_l, es_l, vw_l, h_l, r_l = list(ef), list(es), list(vw), list(hist), list(r)
@@ -210,7 +188,21 @@ class PriceActionStrategy(Strategy):
                 else:
                     if cl_l[i] <= lo_l[i]: bull += 1; v.append("BB↑")
                     elif cl_l[i] >= up_l[i]: bear += 1; v.append("BB↓")
-            scores.append(0 if i < self.min_bars - 1 else bull - bear)
+            score = 0 if i < self.min_bars - 1 else bull - bear
+            if score != 0:
+                if adx_l is not None and (pd.isna(adx_l[i]) or adx_l[i] < self.adx_min):
+                    score = 0  # regime: not enough trend strength
+                elif emat_l is not None and (
+                    pd.isna(emat_l[i])
+                    or (score > 0 and cl_l[i] <= emat_l[i])
+                    or (score < 0 and cl_l[i] >= emat_l[i])
+                ):
+                    score = 0  # counter-trend vs the higher-timeframe EMA
+                elif self.time_windows is not None:
+                    mins = times[i].hour * 60 + times[i].minute
+                    if not any(a <= mins <= b for a, b in self.time_windows):
+                        score = 0  # outside the allowed entry windows
+            scores.append(score)
             votes.append(v)
 
         return {

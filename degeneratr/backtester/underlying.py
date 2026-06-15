@@ -34,6 +34,7 @@ class _Open:
     entry_time: datetime
     entry_index: int
     entry_price: float
+    peak: float = 0.0        # best favorable move so far (for breakeven/trailing)
 
 
 class UnderlyingBacktester:
@@ -51,6 +52,8 @@ class UnderlyingBacktester:
         cooldown_bars: int = 6,
         max_leverage: float = 4.0,
         gap_minutes: int = 60,
+        breakeven_after: float = 0.0,     # once +this move, stop moves to entry (0 = off)
+        trail_pct: float = 0.0,           # trail stop this far below peak once active (0 = off)
         **_ignored,                       # tolerate extra kwargs (e.g. iv) from callers
     ) -> None:
         self._strategy = strategy
@@ -64,6 +67,8 @@ class UnderlyingBacktester:
         self._cooldown_bars = cooldown_bars
         self._max_leverage = max_leverage
         self._gap_minutes = gap_minutes
+        self._breakeven = breakeven_after
+        self._trail = trail_pct
 
     def _session_lasts(self, bars: list[Bar]) -> set[int]:
         n = len(bars)
@@ -115,6 +120,8 @@ class UnderlyingBacktester:
             still: list[_Open] = []
             for tr in open_trades:
                 move = (spot / tr.entry_price - 1.0) * tr.direction
+                if move > tr.peak:
+                    tr.peak = move
                 reason = None
                 if is_session_end:
                     reason = "session_close"
@@ -122,6 +129,10 @@ class UnderlyingBacktester:
                     reason = "take_profit"
                 elif move <= -self._sl:
                     reason = "stop_loss"
+                elif self._trail > 0 and tr.peak >= self._trail and move <= tr.peak - self._trail:
+                    reason = "trail_stop"
+                elif self._breakeven > 0 and tr.peak >= self._breakeven and move <= 0:
+                    reason = "breakeven"
                 elif i - tr.entry_index >= self._max_hold:
                     reason = "max_hold"
                 if reason is None:
