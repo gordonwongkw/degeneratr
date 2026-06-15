@@ -96,9 +96,10 @@ async def _run_backtest(args: argparse.Namespace) -> None:
 
         provider = StoreProvider(BarStore(get_settings().bar_store_path))
     bt = UnderlyingBacktester(strategy=cls(), provider=provider)
+    period = next((p for p in BarPeriod if p.value == args.period), BarPeriod.FIFTEEN_MINUTES)
     end = datetime.now()
     begin = end - timedelta(days=args.days)
-    result = await bt.run(args.ticker, begin, end, period=BarPeriod.FIVE_MINUTES)
+    result = await bt.run(args.ticker, begin, end, period=period)
     pf = result.profit_factor
     pf_str = "inf" if pf == float("inf") else f"{pf:.2f}"
     print(f"\n=== backtest {args.ticker} / {args.strategy} ({args.days}d) ===")
@@ -133,6 +134,19 @@ async def _run_backfill(args: argparse.Namespace) -> None:
     _print_coverage(result["coverage"])
 
 
+async def _run_ingest(args: argparse.Namespace) -> None:
+    from .config import get_settings
+    from .storage import ingest_yfinance
+
+    symbols = args.symbols or get_settings().watchlist_symbols
+    periods = [next(p for p in BarPeriod if p.value == v) for v in args.periods]
+    print(f"ingesting {symbols} @ {args.periods} from yfinance…")
+    result = await ingest_yfinance(symbols, periods)
+    for per, n in result["saved"].items():
+        print(f"  {per}: {n} bars saved")
+    _print_coverage(result["coverage"])
+
+
 async def _run_coverage(args: argparse.Namespace) -> None:
     from .config import get_settings
     from .storage import BarStore
@@ -154,7 +168,7 @@ def _print_coverage(cov: dict) -> None:
 def _run_serve(args: argparse.Namespace) -> None:
     import uvicorn
 
-    print(f"degeneratr dashboard → http://{args.host}:{args.port}")
+    print(f"degeneratr dashboard -> http://{args.host}:{args.port}")
     uvicorn.run(
         "degeneratr.api.app:app",
         host=args.host,
@@ -181,9 +195,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_bt = sub.add_parser("backtest", help="backtest a strategy on a ticker")
     p_bt.add_argument("--ticker", required=True)
     p_bt.add_argument("--strategy", default=next(iter(STRATEGY_REGISTRY)))
-    p_bt.add_argument("--days", type=int, default=5)
-    p_bt.add_argument("--source", choices=["live", "store"], default="live",
-                      help="live Tiger data or the local accumulated store")
+    p_bt.add_argument("--days", type=int, default=60)
+    p_bt.add_argument("--period", default="15m",
+                      choices=[p.value for p in BarPeriod],
+                      help="bar period (default 15m — best for this strategy)")
+    p_bt.add_argument("--source", choices=["live", "store"], default="store",
+                      help="local accumulated store (default) or live Tiger data")
     p_bt.set_defaults(func=_run_backtest)
 
     p_bf = sub.add_parser("backfill", help="capture current Tiger data into the local store")
@@ -192,6 +209,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_bf.add_argument("--band", type=int, default=12, help="strikes per side near spot")
     p_bf.add_argument("--expiries", type=int, default=1, help="front expiries to capture")
     p_bf.set_defaults(func=_run_backfill)
+
+    p_ing = sub.add_parser("ingest", help="seed the store with yfinance underlying bars")
+    p_ing.add_argument("--symbols", nargs="+", default=None, help="default: the configured watchlist")
+    p_ing.add_argument("--periods", nargs="+", default=["5m", "15m"],
+                       choices=[p.value for p in BarPeriod], help="bar periods to ingest")
+    p_ing.set_defaults(func=_run_ingest)
 
     p_cov = sub.add_parser("coverage", help="show what's in the local data store")
     p_cov.set_defaults(func=_run_coverage)

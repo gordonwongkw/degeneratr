@@ -14,6 +14,9 @@ authors = [{ name = "degeneratr" }]
 dependencies = [
     # Data provider SDK (Tiger Brokers)
     "tigeropen>=3.0.0",
+    # Market data via Yahoo Finance — deep intraday history (60d of 5m/15m),
+    # used for backtest data and the charts dashboard (MARKET_DATA_PROVIDER=yfinance)
+    "yfinance>=0.2.40",
     # Execution provider SDK (MooMoo / Futu)
     "moomoo-api>=9.0.0",
     # Numerics / data wrangling

@@ -8,11 +8,11 @@ from pydantic import BaseModel, Field
 
 class BacktestRequest(BaseModel):
     ticker: str = "SPY"
-    strategy: str = "iv_rank"
-    days: int = Field(default=5, ge=1, le=30)
-    period: str = Field(default="5m")
+    strategy: str = "degeneratr"
+    days: int = Field(default=60, ge=1, le=90)
+    period: str = Field(default="15m")
     warmup: int = Field(default=30, ge=5, le=200)
-    source: str = Field(default="live")  # "live" (Tiger) or "store" (local archive)
+    source: str = Field(default="store")  # "live" (Tiger) or "store" (local archive)
     iv: Optional[float] = Field(default=None)  # annualized vol; None → estimate from bars
 
     # Risk overrides (defaults tuned for ~$5–10 SPY options on a $25k account).
@@ -21,8 +21,8 @@ class BacktestRequest(BaseModel):
     max_daily_loss: float = Field(default=5000.0, gt=0)
 
     # Exit + gating overrides (fractions of the underlying price move).
-    # Defaults = sweep's robust 2:1 reward/risk (0.8% take-profit, 0.4% stop).
-    take_profit_pct: float = Field(default=0.008, gt=0)
+    # Defaults = 60-day yfinance sweep's robust winner: symmetric 0.4%/0.4%.
+    take_profit_pct: float = Field(default=0.004, gt=0)
     stop_loss_pct: float = Field(default=0.004, gt=0)
     max_concurrent: int = Field(default=5, ge=1, le=50)
     cooldown_bars: int = Field(default=6, ge=0, le=200)

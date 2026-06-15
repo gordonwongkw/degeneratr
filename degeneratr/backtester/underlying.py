@@ -44,8 +44,8 @@ class UnderlyingBacktester:
         settings: Optional[Settings] = None,
         risk: Optional[RiskManager] = None,
         *,
-        take_profit_pct: float = 0.005,   # +move in the underlying to take profit
-        stop_loss_pct: float = 0.003,     # adverse move to stop out
+        take_profit_pct: float = 0.004,   # +move in the underlying to take profit
+        stop_loss_pct: float = 0.004,     # adverse move to stop out
         max_hold_bars: int = 24,
         max_concurrent_positions: int = 5,
         cooldown_bars: int = 6,

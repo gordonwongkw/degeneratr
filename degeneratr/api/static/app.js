@@ -426,6 +426,136 @@ function renderScan() {
   });
 }
 
+// ============ CHARTS TAB (lightweight-charts) ============
+let chartsRegistry = [];   // [{symbol, chart, series:{}, markers:[]}]
+let chartsLoaded = false;
+
+const IND_COLORS = {
+  ema_fast: "#4c8dff", ema_slow: "#e0a23c",
+  vwap: "#b06cf0", bb_upper: "rgba(146,155,171,0.55)", bb_lower: "rgba(146,155,171,0.55)",
+};
+
+function destroyCharts() {
+  chartsRegistry.forEach((c) => { try { c.chart.remove(); } catch (e) {} });
+  chartsRegistry = [];
+  $("charts-grid").innerHTML = "";
+}
+
+function makeChart(c) {
+  const card = document.createElement("div");
+  card.className = "chart-card";
+  const chg = c.change_pct >= 0 ? "pos" : "neg";
+  card.innerHTML =
+    `<div class="chart-card-head">
+       <span class="sym">${c.symbol}</span>
+       <span class="last">${money2(c.last)} <em class="chg ${chg}">${pct(c.change_pct)}</em></span>
+       <span class="sig-count">${c.signals.length} signals · ${c.bars} bars</span>
+     </div>
+     <div class="lwc" id="lwc-${c.symbol}"></div>`;
+  $("charts-grid").appendChild(card);
+
+  const el = card.querySelector(".lwc");
+  const chart = LightweightCharts.createChart(el, {
+    width: el.clientWidth, height: el.clientHeight || 340,
+    layout: { background: { color: "transparent" }, textColor: "#939bab", fontFamily: "Inter, sans-serif" },
+    grid: { vertLines: { color: "rgba(128,128,128,0.05)" }, horzLines: { color: "rgba(128,128,128,0.07)" } },
+    timeScale: { timeVisible: true, secondsVisible: false, borderColor: "rgba(128,128,128,0.18)" },
+    rightPriceScale: { borderColor: "rgba(128,128,128,0.18)" },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+  });
+
+  const candle = chart.addCandlestickSeries({
+    upColor: "#21b582", downColor: "#f0595a", wickUpColor: "#21b582",
+    wickDownColor: "#f0595a", borderVisible: false,
+  });
+  candle.setData(c.candles);
+
+  const series = {};
+  const addLine = (key, width, dashed) => {
+    const s = chart.addLineSeries({
+      color: IND_COLORS[key], lineWidth: width, priceLineVisible: false,
+      lastValueVisible: false, crosshairMarkerVisible: false,
+      lineStyle: dashed ? LightweightCharts.LineStyle.Dotted : LightweightCharts.LineStyle.Solid,
+    });
+    s.setData(c.indicators[key] || []);
+    series[key] = s;
+  };
+  addLine("ema_fast", 2); addLine("ema_slow", 2);
+  addLine("vwap", 1, true);
+  addLine("bb_upper", 1); addLine("bb_lower", 1);
+
+  const markers = c.signals.map((s) => ({
+    time: s.time,
+    position: s.dir === "bull" ? "belowBar" : "aboveBar",
+    color: s.dir === "bull" ? "#21b582" : "#f0595a",
+    shape: s.dir === "bull" ? "arrowUp" : "arrowDown",
+    text: (s.dir === "bull" ? "▲" : "▼") + s.score,
+  }));
+
+  const entry = { symbol: c.symbol, el, chart, candle, series, markers };
+  chartsRegistry.push(entry);
+  applyToggles(entry);
+  // Size once more after layout settles, then fit the full series in view.
+  requestAnimationFrame(() => {
+    chart.applyOptions({ width: el.clientWidth, height: el.clientHeight || 340 });
+    chart.timeScale().fitContent();
+  });
+}
+
+// Keep charts sized to their grid cells on window resize.
+let _chartsResizeWired = false;
+function wireChartsResize() {
+  if (_chartsResizeWired) return;
+  _chartsResizeWired = true;
+  let raf = null;
+  window.addEventListener("resize", () => {
+    if (raf) cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() =>
+      chartsRegistry.forEach((e) => e.chart.applyOptions({ width: e.el.clientWidth })));
+  });
+}
+
+function applyToggles(entry) {
+  const showEma = $("t-ema").checked, showVwap = $("t-vwap").checked,
+        showBb = $("t-bb").checked, showSig = $("t-sig").checked;
+  entry.series.ema_fast.applyOptions({ visible: showEma });
+  entry.series.ema_slow.applyOptions({ visible: showEma });
+  entry.series.vwap.applyOptions({ visible: showVwap });
+  entry.series.bb_upper.applyOptions({ visible: showBb });
+  entry.series.bb_lower.applyOptions({ visible: showBb });
+  entry.candle.setMarkers(showSig ? entry.markers : []);
+}
+
+async function loadCharts() {
+  const btn = $("charts-btn");
+  btn.disabled = true; btn.classList.add("loading");
+  $("charts-status").className = "status";
+  $("charts-status").textContent = "Loading watchlist charts…";
+  $("charts-empty").classList.remove("hidden");
+  try {
+    const period = $("c-period").value, source = $("c-source").value;
+    const data = await (await fetch(`/api/charts?period=${period}&source=${source}`)).json();
+    destroyCharts();
+    if (!data.charts || !data.charts.length) {
+      $("charts-empty").querySelector("p").textContent =
+        "No data in the store for this period. Run: python -m degeneratr ingest";
+      $("charts-status").textContent = "Empty.";
+      return;
+    }
+    $("charts-empty").classList.add("hidden");
+    data.charts.forEach(makeChart);
+    wireChartsResize();
+    chartsLoaded = true;
+    const totalSig = data.charts.reduce((a, c) => a + c.signals.length, 0);
+    $("charts-status").textContent = `${data.charts.length} tickers · ${period} · ${totalSig} signal onsets · ${data.source}`;
+  } catch (e) {
+    $("charts-status").className = "status error";
+    $("charts-status").textContent = "Failed: " + e.message;
+  } finally {
+    btn.disabled = false; btn.classList.remove("loading");
+  }
+}
+
 // ---- wire up ----
 async function loadCoverage() {
   try {
@@ -451,5 +581,14 @@ document.querySelectorAll("#scan-table thead th").forEach((th) => {
     renderScan();
   });
 });
+// charts tab wiring
+$("charts-btn").addEventListener("click", loadCharts);
+["c-period", "c-source"].forEach((id) => $(id).addEventListener("change", loadCharts));
+["t-ema", "t-vwap", "t-bb", "t-sig"].forEach((id) =>
+  $(id).addEventListener("change", () => chartsRegistry.forEach(applyToggles)));
+document.querySelector('.tab[data-tab="charts"]').addEventListener("click", () => {
+  if (!chartsLoaded) loadCharts();
+});
+
 loadStrategies();
 loadCoverage();

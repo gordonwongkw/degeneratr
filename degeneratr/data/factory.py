@@ -14,6 +14,10 @@ def _build_provider(settings: Settings) -> MarketDataProvider:
         from .tiger import TigerDataProvider
 
         return TigerDataProvider(settings)
+    if name in ("yfinance", "yf", "yahoo"):
+        from .yfinance_provider import YFinanceDataProvider
+
+        return YFinanceDataProvider(settings)
     raise ValueError(f"Unknown market data provider: {settings.market_data_provider!r}")
 
 

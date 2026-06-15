@@ -1,6 +1,7 @@
 """API route handlers — thin async wrappers over the engine/backtester/scanner."""
 from __future__ import annotations
 
+import calendar
 import logging
 from datetime import datetime, timedelta
 
@@ -9,10 +10,12 @@ from fastapi import APIRouter, HTTPException
 from ..backtester.engine import BacktestResult
 from ..backtester.underlying import UnderlyingBacktester
 from ..config import Settings, get_settings
-from ..data.base import BarPeriod
+from ..data.base import Bar, BarPeriod
+from ..data.factory import get_provider
 from ..risk.manager import RiskManager
 from ..scanner.universe import TickerScanner
 from ..strategies import ALGORITHM_NAME, COMPONENT_STRATEGIES, STRATEGY_REGISTRY
+from ..strategies.price_action import PriceActionStrategy
 from .models import (
     BacktestRequest,
     BacktestResponse,
@@ -145,6 +148,85 @@ async def backtest(req: BacktestRequest) -> BacktestResponse:
         logger.exception("backtest failed")
         raise HTTPException(status_code=502, detail=f"backtest failed: {exc}") from exc
     return _serialize(result, req)
+
+
+def _epoch(dt: datetime) -> int:
+    """Wall-clock seconds for lightweight-charts (treat naive bar time as UTC)."""
+    return calendar.timegm(dt.timetuple())
+
+
+def _line(times: list[datetime], values: list) -> list[dict]:
+    """Build a lightweight-charts line series, dropping gaps (None values)."""
+    out = []
+    for t, v in zip(times, values):
+        if v is not None:
+            out.append({"time": _epoch(t), "value": round(float(v), 2)})
+    return out
+
+
+async def _chart_for(symbol, period, bars: list[Bar], min_score: int) -> dict:
+    times = [b.time for b in bars]
+    candles = [
+        {"time": _epoch(b.time), "open": round(b.open, 2), "high": round(b.high, 2),
+         "low": round(b.low, 2), "close": round(b.close, 2)}
+        for b in bars
+    ]
+    ser = PriceActionStrategy().series(bars)
+    # Mark signal ONSETS only (where a bull/bear run begins or flips) — the
+    # strategy votes nearly every bar, so per-bar markers would be unreadable.
+    signals = []
+    prev = None
+    for i, sc in enumerate(ser["score"]):
+        d = "bull" if sc >= min_score else "bear" if -sc >= min_score else None
+        if d and d != prev:
+            signals.append({
+                "time": _epoch(bars[i].time), "price": round(bars[i].close, 2),
+                "dir": d, "score": int(abs(sc)), "reason": " ".join(ser["votes"][i]),
+            })
+        prev = d
+    last = bars[-1].close if bars else 0.0
+    first = bars[0].close if bars else 0.0
+    return {
+        "symbol": symbol, "bars": len(bars),
+        "last": round(last, 2), "change_pct": round((last / first - 1) * 100, 2) if first else 0.0,
+        "candles": candles,
+        "indicators": {
+            "ema_fast": _line(times, ser["ema_fast"]),
+            "ema_slow": _line(times, ser["ema_slow"]),
+            "vwap": _line(times, ser["vwap"]),
+            "bb_upper": _line(times, ser["bb_upper"]),
+            "bb_lower": _line(times, ser["bb_lower"]),
+        },
+        "signals": signals,
+    }
+
+
+@router.get("/charts")
+async def charts(period: str = "15m", source: str = "store", days: int = 60) -> dict:
+    """Per-ticker candles + indicator lines + signal markers for the watchlist."""
+    settings = get_settings()
+    bar_period = _PERIODS.get(period)
+    if bar_period is None:
+        raise HTTPException(status_code=400, detail=f"Unknown period {period!r}")
+    if source == "store":
+        from ..storage import BarStore, StoreProvider
+
+        provider = StoreProvider(BarStore(settings.bar_store_path))
+    else:
+        provider = get_provider(settings)
+    end = datetime.now()
+    begin = end - timedelta(days=days)
+    symbols = settings.watchlist_symbols
+    min_score = PriceActionStrategy().min_score
+    out = []
+    for sym in symbols:
+        try:
+            bars = await provider.get_bars(sym, bar_period, begin, end)
+            if bars:
+                out.append(await _chart_for(sym, bar_period, bars, min_score))
+        except Exception as exc:  # noqa: BLE001 - one bad symbol shouldn't sink the page
+            logger.warning("chart for %s failed: %s", sym, exc)
+    return {"period": period, "source": source, "symbols": [c["symbol"] for c in out], "charts": out}
 
 
 @router.get("/scan", response_model=ScanResponse)

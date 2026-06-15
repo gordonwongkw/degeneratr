@@ -20,11 +20,17 @@ venv/
 # Data / local stores
 data/store/
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
 
 # Logs
 *.log
+
+# Sweep / analysis output artifacts
+sweep_yf_results.json
 
 # OS
 .DS_Store

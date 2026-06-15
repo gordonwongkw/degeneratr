@@ -19,6 +19,9 @@ from __future__ import annotations
 
 from typing import Optional
 
+import pandas as pd
+import pandas_ta as ta
+
 from ..data.base import Bar, IVAnalysis, OptionContract, OptionRight
 from ..indicators.technical import bars_to_frame, bollinger, ema, macd, rsi, vwap
 from .base import Signal, SignalAction, Strategy
@@ -30,9 +33,10 @@ class PriceActionStrategy(Strategy):
     def __init__(
         self,
         *,
-        # Defaults = the most robust sweep config (the only one profitable on
-        # SPY, QQQ and AAPL): min_score 2, EMA 9/21, breakout BB, paired with a
-        # 0.8%/0.4% take-profit/stop in the underlying backtester.
+        # Defaults = the most robust sweep config from the 60-day yfinance sweep
+        # (best risk-adjusted at 15m: highest profit factor, win rate and lowest
+        # drawdown): min_score 2, EMA 9/21, breakout BB, paired with a symmetric
+        # 0.4%/0.4% take-profit/stop in the underlying backtester at 15m bars.
         ema_fast: int = 9,
         ema_slow: int = 21,
         rsi_len: int = 14,
@@ -144,6 +148,76 @@ class PriceActionStrategy(Strategy):
         if -net >= self.min_score:
             return [self._signal(ticker, OptionRight.PUT, -net, votes, close)]
         return []
+
+    def series(self, bars: list[Bar]) -> dict:
+        """Vectorized indicator + per-bar signal series for charting.
+
+        Computes the same votes as :meth:`generate_signals` over the whole
+        series at once. Because every indicator here is causal (EMA, MACD, RSI,
+        Bollinger, cumulative VWAP only use data up to each bar), the value at
+        bar ``i`` equals what ``generate_signals(bars[:i+1])`` would see — so
+        this is a faithful, O(n) reconstruction of the live signals. The
+        ``series_signals`` test asserts they match.
+        """
+        n = len(bars)
+        empty = [None] * n
+        if n == 0:
+            return {"ema_fast": [], "ema_slow": [], "vwap": [], "bb_upper": [],
+                    "bb_lower": [], "score": [], "votes": []}
+        f = bars_to_frame(bars)
+        close = f["close"]
+
+        def col(series):
+            return [None if pd.isna(v) else float(v) for v in series]
+
+        ef = ta.ema(close, length=self.ema_fast) if self.use_ema else pd.Series([pd.NA] * n)
+        es = ta.ema(close, length=self.ema_slow) if self.use_ema else pd.Series([pd.NA] * n)
+        tp = (f["high"] + f["low"] + f["close"]) / 3.0
+        cv = f["volume"].cumsum()
+        vw = (tp * f["volume"]).cumsum() / cv.replace(0, pd.NA)
+        macd_df = ta.macd(close, fast=self.macd_fast, slow=self.macd_slow, signal=self.macd_signal)
+        hist = macd_df.iloc[:, 1] if macd_df is not None and not macd_df.empty else pd.Series([pd.NA] * n, index=close.index)
+        r = ta.rsi(close, length=self.rsi_len)
+        bb = ta.bbands(close, length=self.bb_len, std=self.bb_std)
+        if bb is not None and not bb.empty:
+            bb_lower, bb_upper = bb.iloc[:, 0], bb.iloc[:, 2]
+        else:
+            bb_lower = bb_upper = pd.Series([pd.NA] * n, index=close.index)
+
+        scores: list[int] = []
+        votes: list[list[str]] = []
+        ef_l, es_l, vw_l, h_l, r_l = list(ef), list(es), list(vw), list(hist), list(r)
+        up_l, lo_l, cl_l = list(bb_upper), list(bb_lower), list(close)
+        for i in range(n):
+            bull = bear = 0
+            v: list[str] = []
+            if self.use_ema and pd.notna(ef_l[i]) and pd.notna(es_l[i]):
+                if ef_l[i] > es_l[i]: bull += 1; v.append("EMA↑")
+                elif ef_l[i] < es_l[i]: bear += 1; v.append("EMA↓")
+            if self.use_vwap and pd.notna(vw_l[i]):
+                if cl_l[i] > vw_l[i]: bull += 1; v.append("VWAP↑")
+                elif cl_l[i] < vw_l[i]: bear += 1; v.append("VWAP↓")
+            if self.use_macd and pd.notna(h_l[i]):
+                if h_l[i] > 0: bull += 1; v.append("MACD+")
+                elif h_l[i] < 0: bear += 1; v.append("MACD-")
+            if self.use_rsi and pd.notna(r_l[i]):
+                if r_l[i] >= self.rsi_bull: bull += 1; v.append("RSI↑")
+                elif r_l[i] <= self.rsi_bear: bear += 1; v.append("RSI↓")
+            if self.use_bbands and pd.notna(up_l[i]) and pd.notna(lo_l[i]):
+                if self.bb_mode == "breakout":
+                    if cl_l[i] > up_l[i]: bull += 1; v.append("BB↑")
+                    elif cl_l[i] < lo_l[i]: bear += 1; v.append("BB↓")
+                else:
+                    if cl_l[i] <= lo_l[i]: bull += 1; v.append("BB↑")
+                    elif cl_l[i] >= up_l[i]: bear += 1; v.append("BB↓")
+            scores.append(0 if i < self.min_bars - 1 else bull - bear)
+            votes.append(v)
+
+        return {
+            "ema_fast": col(ef), "ema_slow": col(es), "vwap": col(vw),
+            "bb_upper": col(bb_upper), "bb_lower": col(bb_lower),
+            "score": scores, "votes": votes,
+        }
 
     def _signal(
         self, ticker: str, right: OptionRight, score: int, votes: list[str], spot: float
