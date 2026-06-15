@@ -193,14 +193,19 @@ def _line(times: list[datetime], values: list) -> list[dict]:
     return out
 
 
-async def _chart_for(symbol, period, bars: list[Bar], min_score: int, settings: Settings,
-                     light: bool = False) -> dict:
-    times = [b.time for b in bars]
+async def _chart_for(symbol, candle_bars: list[Bar], strat_bars: list[Bar], strat_period,
+                     min_score: int, settings: Settings, light: bool = False) -> dict:
+    # Candles are drawn at the *display* period (e.g. 5m) for visual detail;
+    # indicators, signals and trades come from the *strategy* bars (15m) — the
+    # strategy stays on the timeframe that backtests best. 15m times fall on the
+    # 5m grid, so markers/lines align to the 5m candles.
     candles = [
         {"time": _epoch(b.time), "open": round(b.open, 2), "high": round(b.high, 2),
          "low": round(b.low, 2), "close": round(b.close, 2)}
-        for b in bars
+        for b in candle_bars
     ]
+    bars = strat_bars
+    times = [b.time for b in bars]
     ser = PriceActionStrategy().series(bars)
     # Mark signal ONSETS only (where a bull/bear run begins or flips) — the
     # strategy votes nearly every bar, so per-bar markers would be unreadable.
@@ -228,7 +233,7 @@ async def _chart_for(symbol, period, bars: list[Bar], min_score: int, settings: 
             settings=settings, risk=RiskManager(settings),
             provider=_PreloadedProvider(symbol, bars),
         )
-        result = await bt.run(symbol, times[0], times[-1], period=period)
+        result = await bt.run(symbol, times[0], times[-1], period=strat_period)
         trades = [
             {"n": i + 1, "dir": "bull" if rt.right == "CALL" else "bear", "right": rt.right,
              "entry_time": _epoch(rt.entry_time), "entry_price": rt.entry_price,
@@ -238,10 +243,10 @@ async def _chart_for(symbol, period, bars: list[Bar], min_score: int, settings: 
             for i, rt in enumerate(result.round_trips)
         ]
 
-    last = bars[-1].close if bars else 0.0
-    first = bars[0].close if bars else 0.0
+    last = candle_bars[-1].close if candle_bars else 0.0
+    first = candle_bars[0].close if candle_bars else 0.0
     return {
-        "symbol": symbol, "bars": len(bars),
+        "symbol": symbol, "bars": len(candle_bars),
         "last": round(last, 2), "change_pct": round((last / first - 1) * 100, 2) if first else 0.0,
         "candles": candles,
         "indicators": {
@@ -265,43 +270,55 @@ def _market_open(now_utc: datetime) -> bool:
     return 13 * 60 + 30 <= mins <= 20 * 60
 
 
-@router.get("/charts")
-async def charts(period: str = "15m", source: str = "store", days: int = 60,
-                 light: bool = False) -> dict:
-    """Per-ticker candles + indicator lines + signal markers for the watchlist.
+# Tiger caps get_bars at ~251 bars FROM begin, so a window wider than ~251 bars
+# returns the OLDEST (stale) bars and misses today. Clamp live windows per period
+# so ~251 bars of that period still reach now.
+_LIVE_MAX_DAYS = {"1m": 1, "5m": 4, "15m": 7, "30m": 14, "1h": 30, "1d": 365}
 
-    ``light=true`` skips the per-ticker backtest (signals only) for fast live
-    polling. ``source=live`` pulls fresh (uncached) data so the latest bar moves.
+
+@router.get("/charts")
+async def charts(period: str = "5m", source: str = "store", days: int = 60,
+                 light: bool = False, signal_period: str = "15m") -> dict:
+    """Per-ticker chart data for the watchlist.
+
+    ``period`` = candle (display) timeframe; ``signal_period`` = the timeframe the
+    strategy/indicators/signals run on (15m backtests best). ``light=true`` skips
+    the per-ticker backtest for fast live polling; ``source=live`` pulls fresh
+    (uncached) Tiger data.
     """
     settings = get_settings()
-    bar_period = _PERIODS.get(period)
-    if bar_period is None:
-        raise HTTPException(status_code=400, detail=f"Unknown period {period!r}")
+    candle_period = _PERIODS.get(period)
+    strat_period = _PERIODS.get(signal_period)
+    if candle_period is None or strat_period is None:
+        raise HTTPException(status_code=400, detail=f"Unknown period {period!r}/{signal_period!r}")
     if source == "store":
         from ..storage import BarStore, StoreProvider
 
         provider = StoreProvider(BarStore(settings.bar_store_path))
     else:
-        # Live: reuse one cache-off provider so each poll re-fetches the forming
-        # bar from Tiger, but over a persistent (already-authenticated) client.
         provider = _live_provider(settings)
-        # Tiger caps get_bars at ~251 bars from `begin`, so a wide window returns
-        # the OLDEST 251 (stale) bars and misses today. Clamp to a recent window
-        # so live always shows current bars ending now.
-        days = min(days, 7)
     end = datetime.now()
-    begin = end - timedelta(days=days)
+
+    def _begin(p: str) -> datetime:
+        d = min(days, _LIVE_MAX_DAYS.get(p, 7)) if source != "store" else days
+        return end - timedelta(days=d)
+
     symbols = settings.watchlist_symbols
     min_score = PriceActionStrategy().min_score
     out = []
     for sym in symbols:
         try:
-            bars = await provider.get_bars(sym, bar_period, begin, end)
-            if bars:
-                out.append(await _chart_for(sym, bar_period, bars, min_score, settings, light=light))
+            candle_bars = await provider.get_bars(sym, candle_period, _begin(period), end)
+            if candle_period.value == signal_period:
+                strat_bars = candle_bars
+            else:
+                strat_bars = await provider.get_bars(sym, strat_period, _begin(signal_period), end)
+            if candle_bars and strat_bars:
+                out.append(await _chart_for(sym, candle_bars, strat_bars, strat_period,
+                                            min_score, settings, light=light))
         except Exception as exc:  # noqa: BLE001 - one bad symbol shouldn't sink the page
             logger.warning("chart for %s failed: %s", sym, exc)
-    return {"period": period, "source": source, "light": light,
+    return {"period": period, "signal_period": signal_period, "source": source, "light": light,
             "market_open": _market_open(datetime.utcnow()),
             "symbols": [c["symbol"] for c in out], "charts": out}
 

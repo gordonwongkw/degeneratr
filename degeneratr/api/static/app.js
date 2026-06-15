@@ -156,7 +156,21 @@ function makeChart(c, period) {
   // scales with the chart instead of cramming the whole window in.
   requestAnimationFrame(() => {
     chart.applyOptions({ width: el.clientWidth, height: el.clientHeight || 340 });
-    chart.timeScale().scrollToRealTime();
+    // open on roughly the most recent trading day (zoom buttons change this)
+    const perDay = BARS_PER_DAY[period] || 78;
+    const total = c.candles.length;
+    chart.timeScale().setVisibleLogicalRange({ from: total - Math.min(total, perDay), to: total + 2 });
+  });
+}
+
+// Zoom every chart to the last `days` trading days (0 = fit all).
+function setZoom(days) {
+  const perDay = BARS_PER_DAY[$("c-period").value] || 78;
+  chartsRegistry.forEach((e) => {
+    const ts = e.chart.timeScale();
+    if (!days) { ts.fitContent(); return; }
+    const total = e.candle.data().length;
+    ts.setVisibleLogicalRange({ from: total - Math.min(total, days * perDay), to: total + 2 });
   });
 }
 
@@ -368,5 +382,11 @@ $("live-btn").addEventListener("click", toggleLive);
 }));
 ["t-ema", "t-vwap", "t-bb", "t-sig", "t-trades"].forEach((id) =>
   $(id).addEventListener("change", () => chartsRegistry.forEach(applyToggles)));
+document.querySelectorAll(".zoom button[data-zoom]").forEach((b) =>
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".zoom button").forEach((x) => x.classList.remove("active"));
+    b.classList.add("active");
+    setZoom(parseInt(b.dataset.zoom, 10));
+  }));
 
 loadCharts();

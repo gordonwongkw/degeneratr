@@ -76,6 +76,17 @@ def _to_ms(dt: datetime) -> int:
     return int(dt.timestamp() * 1000)
 
 
+from zoneinfo import ZoneInfo
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _et_naive(ms: int) -> datetime:
+    """Epoch ms -> US/Eastern wall-clock (naive), so bar times read in US market
+    time regardless of the server's timezone (matches the yfinance store)."""
+    return datetime.fromtimestamp(ms / 1000, _ET).replace(tzinfo=None)
+
+
 def _normalize_iv_pct(value: Any) -> Optional[float]:
     """Normalize an IV rank/percentile to 0–100. Accepts 0–1 or 0–100 input."""
     if value is None:
@@ -223,7 +234,7 @@ class TigerDataProvider(MarketDataProvider):
             bars.append(
                 Bar(
                     symbol=symbol,
-                    time=datetime.fromtimestamp(ts / 1000) if ts else end_time,
+                    time=_et_naive(ts) if ts else end_time,
                     open=_safe_float(row.get("open")),
                     high=_safe_float(row.get("high")),
                     low=_safe_float(row.get("low")),
@@ -336,7 +347,7 @@ class TigerDataProvider(MarketDataProvider):
             out.setdefault(ident, []).append(
                 Bar(
                     symbol=ident,
-                    time=datetime.fromtimestamp(ts / 1000) if ts else end_time,
+                    time=_et_naive(ts) if ts else end_time,
                     open=_safe_float(row.get("open")),
                     high=_safe_float(row.get("high")),
                     low=_safe_float(row.get("low")),
