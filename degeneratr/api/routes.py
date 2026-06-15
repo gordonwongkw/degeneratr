@@ -29,6 +29,18 @@ router = APIRouter(prefix="/api")
 
 _PERIODS = {p.value: p for p in BarPeriod}
 
+# One long-lived live provider, reused across polls. Caching is disabled (fresh
+# bars every poll) but the authenticated Tiger client/connection persists, so
+# live polling doesn't reconnect + re-auth on every request.
+_LIVE_PROVIDER = None
+
+
+def _live_provider(settings: Settings):
+    global _LIVE_PROVIDER
+    if _LIVE_PROVIDER is None:
+        _LIVE_PROVIDER = get_provider(settings.model_copy(update={"bar_cache_ttl": 0}))
+    return _LIVE_PROVIDER
+
 
 @router.get("/health")
 async def health() -> dict:
@@ -270,9 +282,9 @@ async def charts(period: str = "15m", source: str = "store", days: int = 60,
 
         provider = StoreProvider(BarStore(settings.bar_store_path))
     else:
-        # Live: build a fresh provider with caching off so each poll re-fetches
-        # the forming bar from Tiger instead of serving a stale cached window.
-        provider = get_provider(settings.model_copy(update={"bar_cache_ttl": 0}))
+        # Live: reuse one cache-off provider so each poll re-fetches the forming
+        # bar from Tiger, but over a persistent (already-authenticated) client.
+        provider = _live_provider(settings)
     end = datetime.now()
     begin = end - timedelta(days=days)
     symbols = settings.watchlist_symbols
