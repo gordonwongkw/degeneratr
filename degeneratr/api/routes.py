@@ -285,6 +285,10 @@ async def charts(period: str = "15m", source: str = "store", days: int = 60,
         # Live: reuse one cache-off provider so each poll re-fetches the forming
         # bar from Tiger, but over a persistent (already-authenticated) client.
         provider = _live_provider(settings)
+        # Tiger caps get_bars at ~251 bars from `begin`, so a wide window returns
+        # the OLDEST 251 (stale) bars and misses today. Clamp to a recent window
+        # so live always shows current bars ending now.
+        days = min(days, 7)
     end = datetime.now()
     begin = end - timedelta(days=days)
     symbols = settings.watchlist_symbols
