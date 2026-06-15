@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "degeneratr"
+version = "0.1.0"
+description = "Options day trading tool — scanner, strategies, risk, execution and backtesting."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "degeneratr" }]
+
+dependencies = [
+    # Data provider SDK (Tiger Brokers)
+    "tigeropen>=3.0.0",
+    # Execution provider SDK (MooMoo / Futu)
+    "moomoo-api>=9.0.0",
+    # Numerics / data wrangling
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    # Technical indicators (0.4.x is the numpy-2 / pandas-3 compatible line)
+    "pandas-ta>=0.4.67b0",
+    # Options pricing / Greeks
+    "py_vollib>=1.0.1",
+    # API surface (backend only, no frontend)
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    # Settings / validation
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.2.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
+]
+
+[project.scripts]
+degeneratr = "degeneratr.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["degeneratr*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

@@ -1,0 +1,216 @@
+"""Command-line entrypoint for degeneratr.
+
+Examples
+--------
+    python -m degeneratr paper --ticks 1 --dry-run
+    python -m degeneratr paper --strategies momentum_breakout iv_rank
+    python -m degeneratr scan --limit 15
+    python -m degeneratr backtest --ticker SPY --strategy zero_dte --days 5
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+from datetime import datetime, timedelta
+
+from .config import get_settings
+from .data.base import BarPeriod
+from .engine import TickReport, TradingEngine
+from .strategies import STRATEGY_REGISTRY
+
+
+def _configure_logging() -> None:
+    settings = get_settings()
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+    )
+
+
+def _build_strategies(names: list[str]):
+    selected = names or [next(iter(STRATEGY_REGISTRY))]
+    strategies = []
+    for name in selected:
+        cls = STRATEGY_REGISTRY.get(name)
+        if cls is None:
+            raise SystemExit(
+                f"Unknown strategy {name!r}. Available: {', '.join(STRATEGY_REGISTRY)}"
+            )
+        strategies.append(cls())
+    return strategies
+
+
+def _print_report(report: TickReport) -> None:
+    print(f"\n=== tick @ {report.timestamp:%Y-%m-%d %H:%M:%S} ===")
+    print(f"  candidates: {len(report.candidates)}")
+    for c in report.candidates[:10]:
+        print(f"    {c.symbol:<8} score={c.score:6.1f} {' '.join(c.reasons)}")
+    print(f"  signals: {len(report.signals)}  orders: {len(report.orders)}")
+    for o in report.orders:
+        print(f"    order {o.order_id} {o.side.value} {o.symbol} x{o.quantity} @ {o.avg_fill_price}")
+    if report.rejections:
+        print(f"  rejections: {len(report.rejections)}")
+        for r in report.rejections[:10]:
+            print(f"    - {r}")
+
+
+async def _run_paper(args: argparse.Namespace) -> None:
+    engine = TradingEngine(strategies=_build_strategies(args.strategies))
+    try:
+        reports = await engine.run_paper(ticks=args.ticks, interval_seconds=args.interval)
+        for rep in reports:
+            _print_report(rep)
+    finally:
+        await engine.close()
+
+
+async def _run_scan(args: argparse.Namespace) -> None:
+    from .scanner.universe import TickerScanner
+
+    scanner = TickerScanner()
+    candidates = await scanner.scan(limit=args.limit)
+    print(f"\nTop {len(candidates)} candidates:")
+    for c in candidates:
+        print(
+            f"  {c.symbol:<8} score={c.score:6.1f} "
+            f"iv_rank={c.iv_rank} flow={c.net_inflow} earn={c.earnings_within_days}"
+        )
+
+
+async def _run_backtest(args: argparse.Namespace) -> None:
+    from .backtester.engine import Backtester
+
+    cls = STRATEGY_REGISTRY.get(args.strategy)
+    if cls is None:
+        raise SystemExit(f"Unknown strategy {args.strategy!r}")
+
+    provider = None
+    if args.source == "store":
+        from .config import get_settings
+        from .storage import BarStore, StoreProvider
+
+        provider = StoreProvider(BarStore(get_settings().bar_store_path))
+    bt = Backtester(strategy=cls(), provider=provider)
+    end = datetime.now()
+    begin = end - timedelta(days=args.days)
+    result = await bt.run(args.ticker, begin, end, period=BarPeriod.FIVE_MINUTES)
+    pf = result.profit_factor
+    pf_str = "inf" if pf == float("inf") else f"{pf:.2f}"
+    print(f"\n=== backtest {args.ticker} / {args.strategy} ({args.days}d) ===")
+    print(f"  starting cash : {result.starting_cash:,.2f}")
+    print(f"  ending equity : {result.ending_equity:,.2f}")
+    print(f"  return        : {result.return_pct:+.2f}%")
+    print(f"  realized P&L  : {result.realized_pnl:,.2f}")
+    print(f"  commission    : {result.total_commission:,.2f}")
+    print(f"  signals       : {result.signals_generated} generated / {result.signals_rejected} gated")
+    print(f"  --- success rate ---")
+    print(f"  round-trips   : {result.num_trades}  ({len(result.wins)}W / {len(result.losses)}L)")
+    print(f"  win rate      : {result.win_rate * 100:.1f}%")
+    print(f"  avg win       : {result.avg_win:,.2f}")
+    print(f"  avg loss      : {result.avg_loss:,.2f}")
+    print(f"  profit factor : {pf_str}")
+    print(f"  expectancy    : {result.expectancy:,.2f} per trade")
+    print(f"  max drawdown  : {result.max_drawdown:,.2f}")
+
+
+async def _run_backfill(args: argparse.Namespace) -> None:
+    from .config import get_settings
+    from .storage import backfill
+
+    symbols = args.symbols or get_settings().watchlist_symbols
+    print(f"backfilling {symbols} ({args.days}d, ±{args.band} strikes)…")
+    result = await backfill(
+        symbols, days=args.days, strike_band=args.band, expiries=args.expiries
+    )
+    s = result["saved"]
+    print(f"saved: {s['underlying']} underlying bars, {s['option_bars']} option bars "
+          f"across {s['contracts']} contracts")
+    _print_coverage(result["coverage"])
+
+
+async def _run_coverage(args: argparse.Namespace) -> None:
+    from .config import get_settings
+    from .storage import BarStore
+
+    _print_coverage(BarStore(get_settings().bar_store_path).coverage())
+
+
+def _print_coverage(cov: dict) -> None:
+    print("\n=== store coverage ===")
+    print("  underlying:")
+    for u in cov.get("underlying", []):
+        print(f"    {u['symbol']:<6} {u['period']:<4} {u['bars']:>6} bars  "
+              f"{(u['from'] or '?')[:16]} → {(u['to'] or '?')[:16]}")
+    o = cov.get("options", {})
+    print(f"  options: {o.get('contracts', 0)} contracts, {o.get('bars', 0)} bars  "
+          f"{(o.get('from') or '?')[:16]} → {(o.get('to') or '?')[:16]}")
+
+
+def _run_serve(args: argparse.Namespace) -> None:
+    import uvicorn
+
+    print(f"degeneratr dashboard → http://{args.host}:{args.port}")
+    uvicorn.run(
+        "degeneratr.api.app:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="degeneratr", description="Options day-trading tool")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_paper = sub.add_parser("paper", help="run the engine in paper mode")
+    p_paper.add_argument("--ticks", type=int, default=1)
+    p_paper.add_argument("--interval", type=float, default=0.0, help="seconds between ticks")
+    p_paper.add_argument("--strategies", nargs="*", default=[], help="strategy names")
+    p_paper.add_argument("--dry-run", action="store_true")
+    p_paper.set_defaults(func=_run_paper)
+
+    p_scan = sub.add_parser("scan", help="scan the universe for candidates")
+    p_scan.add_argument("--limit", type=int, default=20)
+    p_scan.set_defaults(func=_run_scan)
+
+    p_bt = sub.add_parser("backtest", help="backtest a strategy on a ticker")
+    p_bt.add_argument("--ticker", required=True)
+    p_bt.add_argument("--strategy", default=next(iter(STRATEGY_REGISTRY)))
+    p_bt.add_argument("--days", type=int, default=5)
+    p_bt.add_argument("--source", choices=["live", "store"], default="live",
+                      help="live Tiger data or the local accumulated store")
+    p_bt.set_defaults(func=_run_backtest)
+
+    p_bf = sub.add_parser("backfill", help="capture current Tiger data into the local store")
+    p_bf.add_argument("--symbols", nargs="+", default=None, help="default: the configured watchlist")
+    p_bf.add_argument("--days", type=int, default=5)
+    p_bf.add_argument("--band", type=int, default=12, help="strikes per side near spot")
+    p_bf.add_argument("--expiries", type=int, default=1, help="front expiries to capture")
+    p_bf.set_defaults(func=_run_backfill)
+
+    p_cov = sub.add_parser("coverage", help="show what's in the local data store")
+    p_cov.set_defaults(func=_run_coverage)
+
+    p_serve = sub.add_parser("serve", help="launch the web dashboard + API")
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=8000)
+    p_serve.add_argument("--reload", action="store_true")
+    p_serve.set_defaults(func=_run_serve)
+
+    return parser
+
+
+def main() -> None:
+    _configure_logging()
+    parser = build_parser()
+    args = parser.parse_args()
+    # `serve` runs uvicorn (its own event loop); the rest are coroutines.
+    if asyncio.iscoroutinefunction(args.func):
+        asyncio.run(args.func(args))
+    else:
+        args.func(args)
+
+
+if __name__ == "__main__":
+    main()

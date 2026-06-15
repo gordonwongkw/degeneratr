@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "degeneratr",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "degeneratr", "serve", "--port", "8012"],
+      "port": 8012
+    }
+  ]
+}

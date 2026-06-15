@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>degeneratr</title>
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css?v=5" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-datalabels/2.2.0/chartjs-plugin-datalabels.min.js" defer></script>
+  <script src="/app.js?v=5" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div class="brand-text">
+        <span class="logo">degeneratr</span>
+        <span class="slogan">Where Degens Evolve.</span>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="backtest"><i class="dotnav"></i>Backtest</button>
+      <button class="tab" data-tab="scanner">Scanner</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ============ BACKTEST TAB ============ -->
+    <section id="tab-backtest" class="tabpane active">
+      <aside class="controls">
+        <h2>Run backtest</h2>
+
+        <label class="field">Algorithm
+          <select id="f-strategy"></select>
+          <span class="field-hint" id="algo-hint">Signals from price action (EMA · VWAP · MACD · RSI · Bollinger). Buy = long the move (call), sell = short (put). P&L is tracked on the underlying stock price — no options.</span>
+        </label>
+
+        <div class="row">
+          <label class="field">Ticker <input id="f-ticker" value="SPY" autocomplete="off" /></label>
+          <label class="field">Days <input id="f-days" type="number" value="5" min="1" max="30" /></label>
+        </div>
+        <label class="field">Bar period
+          <select id="f-period">
+            <option value="1m">1 minute</option>
+            <option value="5m" selected>5 minutes</option>
+            <option value="15m">15 minutes</option>
+            <option value="30m">30 minutes</option>
+            <option value="1h">1 hour</option>
+          </select>
+        </label>
+        <label class="field">Data source
+          <select id="f-source">
+            <option value="live" selected>Live (Tiger)</option>
+            <option value="store">Local store (archive)</option>
+          </select>
+          <span class="field-hint" id="cov-hint">checking archive…</span>
+        </label>
+
+        <details class="risk" open>
+          <summary>Risk &amp; exits</summary>
+          <div class="row">
+            <label class="field">Max loss/trade $ <input id="f-maxloss" type="number" value="1500" step="50" /></label>
+            <label class="field">Per-trade % equity <input id="f-frac" type="number" value="0.10" step="0.01" /></label>
+          </div>
+          <div class="row">
+            <label class="field">Take profit % <input id="f-tp" type="number" value="0.8" step="0.05" /></label>
+            <label class="field">Stop loss % <input id="f-sl" type="number" value="0.4" step="0.05" /></label>
+          </div>
+          <span class="field-hint" style="margin:-6px 0 12px;">% move in the underlying that closes the trade.</span>
+          <div class="row">
+            <label class="field">Max concurrent <input id="f-conc" type="number" value="5" min="1" /></label>
+            <label class="field">Cooldown bars <input id="f-cool" type="number" value="6" min="0" /></label>
+          </div>
+        </details>
+
+        <button id="run-btn" class="primary"><span class="btn-label">Run backtest</span></button>
+        <p id="bt-status" class="status"></p>
+      </aside>
+
+      <div class="results">
+        <div id="bt-empty" class="empty">
+          <i class="empty-icon">&#9650;</i>
+          <p>Configure the algorithm and run a backtest to see results.</p>
+        </div>
+        <div id="bt-results" class="hidden">
+          <div id="metric-cards" class="cards"></div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <span class="panel-title" id="price-title">Price action &amp; trades</span>
+              <span class="legend">
+                <span><i class="mk circle"></i>entry</span>
+                <span style="color:var(--green)">&#9650; exit win</span>
+                <span style="color:var(--red)">&#9660; exit loss</span>
+              </span>
+            </div>
+            <div class="chart-wrap"><canvas id="priceChart"></canvas></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><span class="panel-title">Equity curve</span></div>
+            <div class="chart-wrap short"><canvas id="eqChart"></canvas></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <span class="panel-title">Per-trade P&amp;L</span>
+              <span class="legend">
+                <span><i class="mk sq win"></i>win</span>
+                <span><i class="mk sq loss"></i>loss</span>
+              </span>
+            </div>
+            <div class="chart-wrap short"><canvas id="pnlChart"></canvas></div>
+            <div id="exit-chips" class="chips"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><span class="panel-title">Trades</span><span class="muted-sm" id="trades-count"></span></div>
+            <div class="table-wrap">
+              <table id="trades-table" class="sortable">
+                <thead><tr>
+                  <th data-key="idx" class="num">#</th>
+                  <th data-key="right">Dir</th>
+                  <th data-key="entry_time">Entry</th>
+                  <th data-key="exit_time">Exit</th>
+                  <th data-key="entry_price" class="num">In $</th>
+                  <th data-key="exit_price" class="num">Out $</th>
+                  <th data-key="qty" class="num">Shares</th>
+                  <th data-key="pnl" class="num">P&amp;L</th>
+                  <th data-key="pnl_pct" class="num">P&amp;L %</th>
+                  <th data-key="entry_reason">Signal (trigger)</th>
+                  <th data-key="exit_reason">Exit</th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ SCANNER TAB ============ -->
+    <section id="tab-scanner" class="tabpane">
+      <aside class="controls">
+        <h2>Universe scan</h2>
+        <label class="field">Limit <input id="s-limit" type="number" value="20" min="1" max="100" /></label>
+        <button id="scan-btn" class="primary"><span class="btn-label">Run scan</span></button>
+        <p id="scan-status" class="status"></p>
+        <p class="hint">Uses Tiger's market scanner enriched with IV rank, capital flow and earnings proximity. Requires scanner permissions on the account.</p>
+      </aside>
+      <div class="results">
+        <div id="scan-empty" class="empty"><i class="empty-icon">&#9673;</i><p>Run a scan to surface candidate tickers.</p></div>
+        <div class="panel hidden" id="scan-panel">
+          <div class="table-wrap">
+            <table id="scan-table" class="sortable">
+              <thead><tr>
+                <th data-key="symbol">Symbol</th><th data-key="score" class="num">Score</th>
+                <th data-key="iv_rank" class="num">IV rank</th><th data-key="iv_percentile" class="num">IV %ile</th>
+                <th data-key="net_inflow" class="num">Net inflow</th><th data-key="earnings_within_days" class="num">Earnings</th>
+                <th data-key="reasons">Reasons</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
