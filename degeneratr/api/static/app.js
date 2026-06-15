@@ -68,7 +68,15 @@ function makeChart(c, period) {
        <span class="last">${money2(c.last)} <em class="chg ${chg}">${pct(c.change_pct)}</em></span>
        <span class="sig-count">${c.trades.length} trades · <em class="${netCls}">${money2(c.net_pnl)}</em></span>
      </div>
-     <div class="lwc" id="lwc-${c.symbol}"></div>
+     <div class="lwc-wrap">
+       <div class="chart-legend">
+         <span class="leg-ema"><i style="background:#4c8dff"></i>EMA 9</span>
+         <span class="leg-ema"><i style="background:#e0a23c"></i>EMA 21</span>
+         <span class="leg-vwap"><i style="background:#b06cf0"></i>VWAP</span>
+         <span class="leg-bb"><i style="background:rgba(146,155,171,0.9)"></i>Bollinger</span>
+       </div>
+       <div class="lwc" id="lwc-${c.symbol}"></div>
+     </div>
      <details class="trade-log">
        <summary>Trade log — ${c.trades.length} round-trips (entry → exit, P&amp;L)</summary>
        ${tradeLogHTML(c)}
@@ -116,16 +124,19 @@ function makeChart(c, period) {
     shape: s.dir === "bull" ? "arrowUp" : "arrowDown",
     text: "",
   }));
-  // Actual trade markers: entry (circle, direction) + exit (square, win/loss).
+  // Trade markers: entry = directional arrow + trade #, exit = win/loss square
+  // labelled with the trade's P&L so each signal's result is visible on-chart.
   const tradeMarkers = [];
   c.trades.forEach((t) => {
     tradeMarkers.push({
       time: t.entry_time, position: t.dir === "bull" ? "belowBar" : "aboveBar",
-      color: "#4c8dff", shape: "circle", text: "#" + t.n,
+      color: "#4c8dff", shape: t.dir === "bull" ? "arrowUp" : "arrowDown",
+      text: "#" + t.n + (t.dir === "bull" ? " long" : " short"),
     });
     tradeMarkers.push({
       time: t.exit_time, position: t.win ? "aboveBar" : "belowBar",
-      color: t.win ? "#21b582" : "#f0595a", shape: "square", text: "",
+      color: t.win ? "#21b582" : "#f0595a", shape: "square",
+      text: (t.pnl >= 0 ? "+$" : "-$") + Math.abs(Math.round(t.pnl)),
     });
   });
 
@@ -212,6 +223,11 @@ function applyToggles(entry) {
   entry.series.vwap.applyOptions({ visible: showVwap });
   entry.series.bb_upper.applyOptions({ visible: showBb });
   entry.series.bb_lower.applyOptions({ visible: showBb });
+  // keep the on-chart legend in sync with what's shown
+  const card = entry.el.closest(".chart-card");
+  card.querySelectorAll(".leg-ema").forEach((x) => x.classList.toggle("off", !showEma));
+  card.querySelector(".leg-vwap").classList.toggle("off", !showVwap);
+  card.querySelector(".leg-bb").classList.toggle("off", !showBb);
   let markers = [];
   if (showSig) markers = markers.concat(entry.signalMarkers);
   if (showTrades) markers = markers.concat(entry.tradeMarkers);

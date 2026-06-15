@@ -330,3 +330,16 @@ tbody tr:last-child td { border-bottom: none; }
 .lwc-tt .tt-tr { margin-top: 5px; color: var(--muted); }
 .lwc-tt .tt-tr.pos { color: var(--green); }
 .lwc-tt .tt-tr.neg { color: var(--red); }
+
+
+/* ---- on-chart indicator legend ---- */
+.lwc-wrap { position: relative; }
+.chart-legend {
+  position: absolute; top: 7px; left: 11px; z-index: 3; pointer-events: none;
+  display: flex; flex-wrap: wrap; gap: 3px 13px;
+  font-size: 11px; color: var(--muted); font-family: var(--mono);
+  text-shadow: 0 1px 3px var(--bg);
+}
+.chart-legend span { display: inline-flex; align-items: center; gap: 5px; transition: opacity .12s; }
+.chart-legend span.off { opacity: 0.28; }
+.chart-legend i { width: 15px; height: 3px; border-radius: 2px; display: inline-block; }
