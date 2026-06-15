@@ -130,8 +130,8 @@ function makeChart(c, period) {
   c.trades.forEach((t) => {
     tradeMarkers.push({
       time: t.entry_time, position: t.dir === "bull" ? "belowBar" : "aboveBar",
-      color: "#4c8dff", shape: t.dir === "bull" ? "arrowUp" : "arrowDown",
-      text: "#" + t.n + (t.dir === "bull" ? " long" : " short"),
+      color: t.dir === "bull" ? "#4c8dff" : "#b06cf0",
+      shape: t.dir === "bull" ? "arrowUp" : "arrowDown", text: "#" + t.n,
     });
     tradeMarkers.push({
       time: t.exit_time, position: t.win ? "aboveBar" : "belowBar",

@@ -184,11 +184,12 @@ def _epoch(dt: datetime) -> int:
     return calendar.timegm(dt.timetuple())
 
 
-def _line(times: list[datetime], values: list) -> list[dict]:
-    """Build a lightweight-charts line series, dropping gaps (None values)."""
+def _line(times: list[datetime], values: list, lo=None, hi=None) -> list[dict]:
+    """Build a lightweight-charts line series, dropping gaps (None values) and
+    points outside the [lo, hi] candle window."""
     out = []
     for t, v in zip(times, values):
-        if v is not None:
+        if v is not None and (lo is None or lo <= t <= hi):
             out.append({"time": _epoch(t), "value": round(float(v), 2)})
     return out
 
@@ -207,13 +208,19 @@ async def _chart_for(symbol, candle_bars: list[Bar], strat_bars: list[Bar], stra
     bars = strat_bars
     times = [b.time for b in bars]
     ser = PriceActionStrategy().series(bars)
+    # The strategy may span more history than the candles (e.g. live: 15m over 7d
+    # vs 5m candles over ~4d) for good warmup. Clip everything we DISPLAY to the
+    # candle window so markers/lines never land left of the first candle.
+    c_lo = candle_bars[0].time if candle_bars else None
+    c_hi = candle_bars[-1].time if candle_bars else None
+    in_win = (lambda t: True) if c_lo is None else (lambda t: c_lo <= t <= c_hi)
     # Mark signal ONSETS only (where a bull/bear run begins or flips) — the
     # strategy votes nearly every bar, so per-bar markers would be unreadable.
     signals = []
     prev = None
     for i, sc in enumerate(ser["score"]):
         d = "bull" if sc >= min_score else "bear" if -sc >= min_score else None
-        if d and d != prev:
+        if d and d != prev and in_win(bars[i].time):
             signals.append({
                 "time": _epoch(bars[i].time), "price": round(bars[i].close, 2),
                 "dir": d, "score": int(abs(sc)), "reason": " ".join(ser["votes"][i]),
@@ -240,7 +247,7 @@ async def _chart_for(symbol, candle_bars: list[Bar], strat_bars: list[Bar], stra
              "exit_time": _epoch(rt.exit_time), "exit_price": rt.exit_price,
              "qty": rt.quantity, "pnl": round(rt.pnl, 2), "pnl_pct": round(rt.pnl_pct, 2),
              "win": rt.win, "exit_reason": rt.exit_reason, "entry_reason": rt.entry_reason}
-            for i, rt in enumerate(result.round_trips)
+            for i, rt in enumerate(r for r in result.round_trips if in_win(r.entry_time))
         ]
 
     last = candle_bars[-1].close if candle_bars else 0.0
@@ -250,11 +257,11 @@ async def _chart_for(symbol, candle_bars: list[Bar], strat_bars: list[Bar], stra
         "last": round(last, 2), "change_pct": round((last / first - 1) * 100, 2) if first else 0.0,
         "candles": candles,
         "indicators": {
-            "ema_fast": _line(times, ser["ema_fast"]),
-            "ema_slow": _line(times, ser["ema_slow"]),
-            "vwap": _line(times, ser["vwap"]),
-            "bb_upper": _line(times, ser["bb_upper"]),
-            "bb_lower": _line(times, ser["bb_lower"]),
+            "ema_fast": _line(times, ser["ema_fast"], c_lo, c_hi),
+            "ema_slow": _line(times, ser["ema_slow"], c_lo, c_hi),
+            "vwap": _line(times, ser["vwap"], c_lo, c_hi),
+            "bb_upper": _line(times, ser["bb_upper"], c_lo, c_hi),
+            "bb_lower": _line(times, ser["bb_lower"], c_lo, c_hi),
         },
         "signals": signals,
         "trades": trades,
