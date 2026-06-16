@@ -8,9 +8,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=18" />
+  <link rel="stylesheet" href="/style.css?v=19" />
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js" defer></script>
-  <script src="/app.js?v=18" defer></script>
+  <script src="/app.js?v=19" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -21,7 +21,13 @@
         <span class="slogan">Where Degens Evolve.</span>
       </div>
     </div>
-    
+    <div class="market-status" id="mkt-status">
+      <span class="mkt-dot"></span>
+      <div class="mkt-text">
+        <span class="mkt-label">US Market</span>
+        <span class="mkt-clock" id="mkt-clock">—</span>
+      </div>
+    </div>
   </header>
 
   <main>

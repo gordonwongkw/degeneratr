@@ -127,8 +127,11 @@ function makeChart(c, period) {
     shape: s.dir === "bull" ? "arrowUp" : "arrowDown",
     text: "",
   }));
-  // Trade markers: entry = directional arrow + trade #, exit = win/loss square
-  // labelled with the trade's P&L so each signal's result is visible on-chart.
+  // Trade markers — clean: entry = a small direction arrow with the trade #,
+  // exit = a small win/loss dot. No floating P&L text (it cluttered the chart
+  // and collided when trades exited on the same bar); the P&L shows on hover and
+  // in the trade log. Wins sit above the bar, losses below, so a same-bar
+  // win+loss never overlap.
   const tradeMarkers = [];
   c.trades.forEach((t) => {
     tradeMarkers.push({
@@ -138,8 +141,7 @@ function makeChart(c, period) {
     });
     tradeMarkers.push({
       time: t.exit_time, position: t.win ? "aboveBar" : "belowBar",
-      color: t.win ? "#21b582" : "#f0595a", shape: "square",
-      text: (t.pnl >= 0 ? "+$" : "-$") + Math.abs(Math.round(t.pnl)),
+      color: t.win ? "#21b582" : "#f0595a", shape: "circle",
     });
   });
 
@@ -391,5 +393,25 @@ document.querySelectorAll(".zoom button[data-zoom]").forEach((b) =>
     b.classList.add("active");
     setZoom(parseInt(b.dataset.zoom, 10));
   }));
+
+// ---- US market status (live ET clock, open/closed) ----
+function updateMarketStatus() {
+  const p = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York", weekday: "short", hour: "2-digit",
+    minute: "2-digit", hour12: false,
+  }).formatToParts(new Date());
+  const get = (t) => (p.find((x) => x.type === t) || {}).value;
+  const wd = get("weekday"), hh = +get("hour"), mm = +get("minute");
+  const weekday = !["Sat", "Sun"].includes(wd);
+  const mins = hh * 60 + mm;
+  const open = weekday && mins >= 9 * 60 + 30 && mins < 16 * 60;
+  const el = $("mkt-status");
+  el.classList.toggle("open", open);
+  el.classList.toggle("closed", !open);
+  el.querySelector(".mkt-label").textContent = open ? "Market Open" : "Market Closed";
+  $("mkt-clock").textContent = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")} ET`;
+}
+updateMarketStatus();
+setInterval(updateMarketStatus, 15000);
 
 loadCharts();

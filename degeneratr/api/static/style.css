@@ -411,3 +411,26 @@ button.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #fff); 
 .zoom button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 
 .chart-legend { top: 9px; left: 13px; font-size: 10.5px; letter-spacing: 0.3px; }
+
+
+/* ---- US market status badge (topbar) ---- */
+.market-status {
+  display: flex; align-items: center; gap: 11px;
+  padding: 8px 16px 8px 14px; border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  border: 1px solid var(--border);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+}
+.market-status .mkt-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+.market-status.open .mkt-dot { background: var(--green); animation: mktpulse 2.2s ease-out infinite; }
+.market-status.closed .mkt-dot { background: var(--faint); }
+@keyframes mktpulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 45%, transparent); }
+  70%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--green) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 0%, transparent); }
+}
+.market-status .mkt-text { display: flex; flex-direction: column; line-height: 1.25; }
+.market-status .mkt-label { font-size: 12.5px; font-weight: 600; letter-spacing: -0.1px; color: var(--text); }
+.market-status.open .mkt-label { color: var(--green); }
+.market-status.closed .mkt-label { color: var(--muted); }
+.market-status .mkt-clock { font-size: 10.5px; color: var(--faint); font-family: var(--mono); letter-spacing: 0.3px; }
