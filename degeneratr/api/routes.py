@@ -208,6 +208,12 @@ async def _chart_for(symbol, candle_bars: list[Bar], strat_bars: list[Bar], stra
     bars = strat_bars
     times = [b.time for b in bars]
     ser = PriceActionStrategy().series(bars)
+    # Indicator LINES are drawn on the candle (display) period so they hug the
+    # candles and don't blow out the y-axis — a 15m Bollinger over 5m candles is
+    # both too wide (squashes the candles) and visually wrong. Signals/trades
+    # still come from the 15m strategy (`ser`).
+    disp = PriceActionStrategy().series(candle_bars)
+    dtimes = [b.time for b in candle_bars]
     # The strategy may span more history than the candles (e.g. live: 15m over 7d
     # vs 5m candles over ~4d) for good warmup. Clip everything we DISPLAY to the
     # candle window so markers/lines never land left of the first candle.
@@ -257,11 +263,11 @@ async def _chart_for(symbol, candle_bars: list[Bar], strat_bars: list[Bar], stra
         "last": round(last, 2), "change_pct": round((last / first - 1) * 100, 2) if first else 0.0,
         "candles": candles,
         "indicators": {
-            "ema_fast": _line(times, ser["ema_fast"], c_lo, c_hi),
-            "ema_slow": _line(times, ser["ema_slow"], c_lo, c_hi),
-            "vwap": _line(times, ser["vwap"], c_lo, c_hi),
-            "bb_upper": _line(times, ser["bb_upper"], c_lo, c_hi),
-            "bb_lower": _line(times, ser["bb_lower"], c_lo, c_hi),
+            "ema_fast": _line(dtimes, disp["ema_fast"]),
+            "ema_slow": _line(dtimes, disp["ema_slow"]),
+            "vwap": _line(dtimes, disp["vwap"]),
+            "bb_upper": _line(dtimes, disp["bb_upper"]),
+            "bb_lower": _line(dtimes, disp["bb_lower"]),
         },
         "signals": signals,
         "trades": trades,

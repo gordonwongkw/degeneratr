@@ -108,6 +108,9 @@ function makeChart(c, period) {
       color: IND_COLORS[key], lineWidth: width, priceLineVisible: false,
       lastValueVisible: false, crosshairMarkerVisible: false,
       lineStyle: dashed ? LightweightCharts.LineStyle.Dotted : LightweightCharts.LineStyle.Solid,
+      // Don't let indicators (esp. the wide Bollinger band) stretch the price
+      // axis — the candles drive the scale so they fill the height.
+      autoscaleInfoProvider: () => null,
     });
     s.setData(c.indicators[key] || []);
     series[key] = s;
