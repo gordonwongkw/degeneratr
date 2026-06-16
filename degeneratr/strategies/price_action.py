@@ -141,9 +141,13 @@ class PriceActionStrategy(Strategy):
 
         ef = ta.ema(close, length=self.ema_fast) if self.use_ema else pd.Series([pd.NA] * n)
         es = ta.ema(close, length=self.ema_slow) if self.use_ema else pd.Series([pd.NA] * n)
+        # Session-anchored VWAP: reset the running sums each trading day, the way
+        # intraday VWAP actually works (a window-wide cumulative VWAP is anchored
+        # to the start of history and is meaningless intraday).
         tp = (f["high"] + f["low"] + f["close"]) / 3.0
-        cv = f["volume"].cumsum()
-        vw = (tp * f["volume"]).cumsum() / cv.replace(0, pd.NA)
+        day = f.index.normalize()
+        cv = f["volume"].groupby(day).cumsum()
+        vw = (tp * f["volume"]).groupby(day).cumsum() / cv.replace(0, pd.NA)
         macd_df = ta.macd(close, fast=self.macd_fast, slow=self.macd_slow, signal=self.macd_signal)
         hist = macd_df.iloc[:, 1] if macd_df is not None and not macd_df.empty else pd.Series([pd.NA] * n, index=close.index)
         r = ta.rsi(close, length=self.rsi_len)
