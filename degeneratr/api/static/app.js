@@ -145,13 +145,38 @@ function makeChart(c, period) {
     });
   });
 
+  // Subtle entry→exit connector for each trade, so a trade is easy to trace.
+  // Cyan = win, rose = loss — hues picked to not clash with EMA (blue/amber),
+  // VWAP (purple), Bollinger (gray), or the green/red candles.
+  const links = [];
+  c.trades.forEach((t) => {
+    if (t.entry_time >= t.exit_time) return;
+    const s = chart.addLineSeries({
+      color: t.win ? "rgba(34,211,238,0.9)" : "rgba(251,113,133,0.9)",
+      lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false, autoscaleInfoProvider: () => null,
+    });
+    s.setData([
+      { time: t.entry_time, value: t.entry_price },
+      { time: t.exit_time, value: t.exit_price },
+    ]);
+    links.push(s);
+  });
+
+  // Group trades by time so same-bar entries/exits are ALL captured (the old
+  // Map kept only the last one, so colliding trades lost their tooltip).
+  const groupByTime = (key) => {
+    const m = new Map();
+    c.trades.forEach((t) => { if (!m.has(t[key])) m.set(t[key], []); m.get(t[key]).push(t); });
+    return m;
+  };
   const entry = {
-    symbol: c.symbol, el, chart, candle, series, signalMarkers, tradeMarkers,
+    symbol: c.symbol, el, chart, candle, series, signalMarkers, tradeMarkers, links,
     lastSignalTime: c.signals.length ? c.signals[c.signals.length - 1].time : 0,
     lastBarTime: c.candles.length ? c.candles[c.candles.length - 1].time : 0,
     sigByTime: new Map(c.signals.map((s) => [s.time, s])),
-    entryByTime: new Map(c.trades.map((t) => [t.entry_time, t])),
-    exitByTime: new Map(c.trades.map((t) => [t.exit_time, t])),
+    entryByTime: groupByTime("entry_time"),
+    exitByTime: groupByTime("exit_time"),
   };
   chartsRegistry.push(entry);
   applyToggles(entry);
@@ -198,16 +223,33 @@ function wireTooltip(entry) {
     const o = param.seriesData.get(entry.candle);
     if (!o) { tt.style.opacity = 0; return; }
     const up = o.close >= o.open;
-    let html = `<div class="tt-h">${entry.symbol} · ${fmtFull(param.time)}</div>` +
-      `<div class="tt-ohlc"><span>O ${o.open.toFixed(2)}</span><span>H ${o.high.toFixed(2)}</span>` +
-      `<span>L ${o.low.toFixed(2)}</span><span class="${up ? "pos" : "neg"}">C ${o.close.toFixed(2)}</span></div>`;
+    let html = `<div class="tt-head"><span class="tt-sym">${entry.symbol}</span>` +
+      `<span class="tt-time">${fmtFull(param.time)} ET</span></div>` +
+      `<div class="tt-ohlc">` +
+      `<span><i>O</i>${o.open.toFixed(2)}</span><span><i>H</i>${o.high.toFixed(2)}</span>` +
+      `<span><i>L</i>${o.low.toFixed(2)}</span>` +
+      `<span class="${up ? "pos" : "neg"}"><i>C</i>${o.close.toFixed(2)}</span></div>`;
     const sig = entry.sigByTime.get(param.time);
-    if (sig) html += `<div class="tt-sig ${sig.dir}">${sig.dir === "bull" ? "▲ BULL" : "▼ BEAR"} signal · score ${sig.score}` +
-      `${sig.reason ? ` · ${sig.reason}` : ""}</div>`;
-    const en = entry.entryByTime.get(param.time);
-    if (en) html += `<div class="tt-tr">● Entry #${en.n} ${en.dir === "bull" ? "LONG" : "SHORT"} @ ${en.entry_price.toFixed(2)}</div>`;
-    const ex = entry.exitByTime.get(param.time);
-    if (ex) html += `<div class="tt-tr ${ex.win ? "pos" : "neg"}">■ Exit #${ex.n} · ${money2(ex.pnl)} · ${ex.exit_reason}</div>`;
+    if (sig) html += `<div class="tt-sig ${sig.dir}"><span class="tt-pill">` +
+      `${sig.dir === "bull" ? "▲ BULLISH" : "▼ BEARISH"}</span>` +
+      `<span class="tt-sc">confluence ${sig.score}</span>` +
+      `${sig.reason ? `<div class="tt-reason">${sig.reason}</div>` : ""}</div>`;
+    const ens = entry.entryByTime.get(param.time) || [];
+    const exs = entry.exitByTime.get(param.time) || [];
+    if (ens.length || exs.length) {
+      html += `<div class="tt-trades">`;
+      ens.forEach((t) => {
+        html += `<div class="tt-trow"><span class="tt-badge ${t.dir === "bull" ? "long" : "short"}">#${t.n}</span>` +
+          `<span class="tt-act">Entry ${t.dir === "bull" ? "long" : "short"}</span>` +
+          `<b class="tt-px">${t.entry_price.toFixed(2)}</b></div>`;
+      });
+      exs.forEach((t) => {
+        html += `<div class="tt-trow"><span class="tt-badge ${t.win ? "win" : "loss"}">#${t.n}</span>` +
+          `<span class="tt-act">Exit · ${t.exit_reason}</span>` +
+          `<b class="${t.pnl >= 0 ? "pos" : "neg"}">${(t.pnl >= 0 ? "+$" : "-$") + Math.abs(Math.round(t.pnl))}</b></div>`;
+      });
+      html += `</div>`;
+    }
     tt.innerHTML = html;
     const rect = entry.el.getBoundingClientRect();
     tt.style.opacity = 1;
@@ -247,6 +289,8 @@ function applyToggles(entry) {
   card.querySelectorAll(".leg-ema").forEach((x) => x.classList.toggle("off", !showEma));
   card.querySelector(".leg-vwap").classList.toggle("off", !showVwap);
   card.querySelector(".leg-bb").classList.toggle("off", !showBb);
+  const showLinks = !$("t-links") || $("t-links").checked;
+  entry.links.forEach((s) => s.applyOptions({ visible: showTrades && showLinks }));
   let markers = [];
   if (showSig) markers = markers.concat(entry.signalMarkers);
   if (showTrades) markers = markers.concat(entry.tradeMarkers);
@@ -385,7 +429,7 @@ $("live-btn").addEventListener("click", toggleLive);
   if (liveTimer) { clearInterval(liveTimer); liveTimer = null; setLiveUI(false); }
   loadCharts();
 }));
-["t-ema", "t-vwap", "t-bb", "t-sig", "t-trades"].forEach((id) =>
+["t-ema", "t-vwap", "t-bb", "t-sig", "t-trades", "t-links"].forEach((id) =>
   $(id).addEventListener("change", () => chartsRegistry.forEach(applyToggles)));
 document.querySelectorAll(".zoom button[data-zoom]").forEach((b) =>
   b.addEventListener("click", () => {
