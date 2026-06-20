@@ -453,6 +453,39 @@ function renderTickerTape(charts) {
   tape.innerHTML = `<div class="tape-track">${row}${row}</div>`;
 }
 
+// ---- algorithm performance panel (persisted trade log) ----
+function renderPerformance(perf) {
+  const panel = $("perf-panel");
+  if (!panel) return;
+  const o = perf && perf.overall;
+  if (!o || !o.trades) { panel.classList.add("hidden"); return; }
+  panel.classList.remove("hidden");
+  const pf = o.profit_factor == null ? "∞" : o.profit_factor.toFixed(2);
+  const stat = (label, val, cls) =>
+    `<div class="perf-stat"><span class="ps-label">${label}</span><span class="ps-val ${cls || ""}">${val}</span></div>`;
+  $("perf-stats").innerHTML =
+    stat("Win rate", (o.win_rate * 100).toFixed(1) + "%", o.win_rate >= 0.5 ? "pos" : "neg") +
+    stat("Net P&L", money2(o.net_pnl), o.net_pnl >= 0 ? "pos" : "neg") +
+    stat("Profit factor", pf, (o.profit_factor == null || o.profit_factor >= 1) ? "pos" : "neg") +
+    stat("Trades", `${o.trades} <em class="wl">${o.wins}W/${o.losses}L</em>`) +
+    stat("Expectancy", money2(o.expectancy) + "/t", o.expectancy >= 0 ? "pos" : "neg");
+  const rows = Object.entries(perf.per_symbol || {}).map(([sym, s]) => {
+    const spf = s.profit_factor == null ? "∞" : s.profit_factor.toFixed(2);
+    return `<tr><td>${sym}</td><td class="num">${s.trades}</td><td class="num">${s.wins}/${s.losses}</td>
+      <td class="num ${s.win_rate >= 0.5 ? "pos" : "neg"}">${(s.win_rate * 100).toFixed(0)}%</td>
+      <td class="num ${s.net_pnl >= 0 ? "pos" : "neg"}">${money2(s.net_pnl)}</td>
+      <td class="num">${spf}</td></tr>`;
+  }).join("");
+  $("perf-by-symbol").innerHTML = `<table class="perf-table">
+    <thead><tr><th>Ticker</th><th class="num">Trades</th><th class="num">W/L</th>
+      <th class="num">Win%</th><th class="num">Net P&amp;L</th><th class="num">PF</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+async function loadPerformance() {
+  try { renderPerformance(await (await fetch("/api/performance")).json()); }
+  catch (e) { /* leave the panel hidden if the endpoint isn't available */ }
+}
+
 async function loadCharts() {
   const btn = $("charts-btn");
   btn.disabled = true; btn.classList.add("loading");
@@ -476,6 +509,7 @@ async function loadCharts() {
     renderTickerTape(sorted);
     syncLogToggleLabel();
     wireChartsResize();
+    loadPerformance();
     chartsLoaded = true;
     const totalTrades = data.charts.reduce((a, c) => a + c.trades.length, 0);
     const totalNet = data.charts.reduce((a, c) => a + c.net_pnl, 0);

@@ -1,0 +1,47 @@
+# Render Blueprint for degeneratr.
+#
+# A persistent Disk holds the SQLite store (bars + trade log) so data survives
+# deploys. Disks require a paid instance type (the free tier has no disk).
+#
+# Secrets (Tiger creds, Telegram token) are marked `sync: false` — set their
+# values in the Render dashboard, not in this file. The Tiger RSA private key is
+# added as a *Secret File* in the dashboard; point TIGER_PRIVATE_KEY_PATH at its
+# mount path (e.g. /etc/secrets/tiger_private_key.pem).
+services:
+  - type: web
+    name: degeneratr
+    runtime: python
+    plan: starter            # disks need a paid plan
+    buildCommand: pip install -e .
+    startCommand: uvicorn degeneratr.api.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: BAR_STORE_PATH
+        value: /var/data/bars.db
+      - key: MARKET_DATA_PROVIDER
+        value: tiger
+      - key: DATA_PIPELINE_ENABLED
+        value: "true"
+      - key: TIGER_TRADE_ENV
+        value: PAPER
+      - key: TIGER_ID
+        sync: false
+      - key: TIGER_PAPER_ACCOUNT
+        sync: false
+      - key: TIGER_LIVE_ACCOUNT
+        sync: false
+      - key: TIGER_PRIVATE_KEY_PATH
+        sync: false           # path to the Secret File you add in the dashboard
+      - key: TELEGRAM_ENABLED
+        value: "false"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false

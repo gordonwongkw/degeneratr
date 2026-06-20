@@ -46,6 +46,16 @@ class BarStore:
                     open REAL, high REAL, low REAL, close REAL, volume INTEGER,
                     PRIMARY KEY(identifier, period, time_ms))"""
             )
+            # Realized round-trips from the algorithm — the persisted performance
+            # record. Natural-key (symbol + entry + exit) so re-runs upsert.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS trade_log(
+                    symbol TEXT, entry_ms INTEGER, exit_ms INTEGER,
+                    direction TEXT, right TEXT,
+                    entry_price REAL, exit_price REAL, qty INTEGER,
+                    pnl REAL, pnl_pct REAL, win INTEGER, exit_reason TEXT,
+                    PRIMARY KEY(symbol, entry_ms, exit_ms))"""
+            )
 
     # ---- writes ----
     def save_underlying(self, symbol: str, period: str, bars: list[Bar]) -> int:
@@ -73,6 +83,78 @@ class BarStore:
                 "INSERT OR REPLACE INTO option_bars VALUES(?,?,?,?,?,?,?,?)", rows
             )
         return len(rows)
+
+    def save_trades(self, symbol: str, round_trips: list) -> int:
+        """Upsert realized round-trips for a symbol (idempotent on entry+exit)."""
+        rows = []
+        for rt in round_trips:
+            direction = "bull" if rt.right == "CALL" else "bear"
+            win = 1 if getattr(rt, "win", rt.pnl >= 0) else 0
+            rows.append((
+                symbol, _to_ms(rt.entry_time), _to_ms(rt.exit_time),
+                direction, rt.right, rt.entry_price, rt.exit_price, rt.quantity,
+                rt.pnl, rt.pnl_pct, win, rt.exit_reason,
+            ))
+        if not rows:
+            return 0
+        with self._lock, self._conn() as c:
+            c.executemany(
+                "INSERT OR REPLACE INTO trade_log VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", rows
+            )
+        return len(rows)
+
+    def load_trades(
+        self, symbol: Optional[str] = None,
+        begin: Optional[datetime] = None, end: Optional[datetime] = None,
+    ) -> list[dict]:
+        q = ("SELECT symbol, entry_ms, exit_ms, direction, right, entry_price, "
+             "exit_price, qty, pnl, pnl_pct, win, exit_reason FROM trade_log")
+        clauses, args = [], []
+        if symbol:
+            clauses.append("symbol=?"); args.append(symbol)
+        if begin is not None:
+            clauses.append("entry_ms>=?"); args.append(_to_ms(begin))
+        if end is not None:
+            clauses.append("entry_ms<=?"); args.append(_to_ms(end))
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
+        q += " ORDER BY entry_ms"
+        cols = ["symbol", "entry_ms", "exit_ms", "direction", "right", "entry_price",
+                "exit_price", "qty", "pnl", "pnl_pct", "win", "exit_reason"]
+        with self._conn() as c:
+            return [dict(zip(cols, r)) for r in c.execute(q, tuple(args)).fetchall()]
+
+    @staticmethod
+    def _agg(rows: list[tuple]) -> dict:
+        """Aggregate (pnl, win) rows into a performance summary block."""
+        trades = len(rows)
+        wins = [p for p, w in rows if w]
+        losses = [p for p, w in rows if not w]
+        gross_win = sum(wins)
+        gross_loss = -sum(losses)  # positive magnitude
+        net = sum(p for p, _ in rows)
+        pf = (gross_win / gross_loss) if gross_loss > 0 else (float("inf") if gross_win > 0 else 0.0)
+        return {
+            "trades": trades, "wins": len(wins), "losses": len(losses),
+            "win_rate": round(len(wins) / trades, 4) if trades else 0.0,
+            "net_pnl": round(net, 2),
+            "avg_win": round(gross_win / len(wins), 2) if wins else 0.0,
+            "avg_loss": round(-gross_loss / len(losses), 2) if losses else 0.0,
+            "profit_factor": None if pf == float("inf") else round(pf, 2),
+            "expectancy": round(net / trades, 2) if trades else 0.0,
+        }
+
+    def performance_summary(self) -> dict:
+        """Overall + per-symbol stats over the whole persisted trade log."""
+        with self._conn() as c:
+            rows = c.execute("SELECT symbol, pnl, win FROM trade_log").fetchall()
+        by_symbol: dict[str, list[tuple]] = {}
+        for sym, pnl, win in rows:
+            by_symbol.setdefault(sym, []).append((pnl, win))
+        per = {sym: self._agg(r) for sym, r in by_symbol.items()}
+        overall = self._agg([(pnl, win) for _, pnl, win in rows])
+        return {"overall": overall,
+                "per_symbol": dict(sorted(per.items(), key=lambda kv: kv[1]["net_pnl"], reverse=True))}
 
     # ---- reads ----
     def load_underlying(

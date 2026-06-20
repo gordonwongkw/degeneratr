@@ -8,9 +8,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=21" />
+  <link rel="stylesheet" href="/style.css?v=22" />
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js" defer></script>
-  <script src="/app.js?v=21" defer></script>
+  <script src="/app.js?v=22" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -79,6 +79,17 @@
         </div>
         <p id="charts-status" class="status"></p>
       </div>
+      <section id="perf-panel" class="perf-panel hidden">
+        <div class="perf-head">
+          <span class="perf-title">Algorithm performance</span>
+          <span class="perf-meta" id="perf-meta">persisted trade log</span>
+        </div>
+        <div class="perf-stats" id="perf-stats"></div>
+        <details class="perf-detail">
+          <summary>Per-ticker breakdown</summary>
+          <div class="perf-by-symbol" id="perf-by-symbol"></div>
+        </details>
+      </section>
       <div id="charts-grid" class="charts-grid"></div>
       <div id="charts-empty" class="empty"><i class="empty-icon">&#9650;</i><p>Loading watchlist charts…</p></div>
     </section>

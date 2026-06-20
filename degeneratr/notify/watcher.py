@@ -15,10 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from ..config import Settings, get_settings
+from ..marketclock import after_close, day_key, market_hours, now_et
 from .telegram import (
     TelegramNotifier,
     format_entry,
@@ -28,26 +27,6 @@ from .telegram import (
 )
 
 logger = logging.getLogger("degeneratr.notify")
-
-ET = ZoneInfo("America/New_York")
-_OPEN_MIN = 9 * 60 + 30   # 09:30 ET
-_CLOSE_MIN = 16 * 60      # 16:00 ET
-
-
-def _now_et() -> datetime:
-    return datetime.now(ET)
-
-
-def _minutes(now: datetime) -> int:
-    return now.hour * 60 + now.minute
-
-
-def _is_weekday(now: datetime) -> bool:
-    return now.weekday() < 5
-
-
-def _market_hours(now: datetime) -> bool:
-    return _is_weekday(now) and _OPEN_MIN <= _minutes(now) < _CLOSE_MIN
 
 
 class _State:
@@ -112,10 +91,10 @@ async def run_watch_loop(settings: Settings | None = None, interval: float | Non
     logger.info("degeneratr watcher online (interval %.0fs)", interval)
 
     while True:
-        now = _now_et()
-        st.roll(now.strftime("%Y-%m-%d"))
+        now = now_et()
+        st.roll(day_key(now))
         try:
-            if _market_hours(now):
+            if market_hours(now):
                 data = await compute_charts(settings, period="5m", source="live", days=3)
                 if not st.baselined:
                     _diff_and_alert(data["charts"], st, notifier)  # silent baseline
@@ -126,7 +105,7 @@ async def run_watch_loop(settings: Settings | None = None, interval: float | Non
                     if n:
                         logger.info("watcher sent %d alert(s)", n)
                 await asyncio.sleep(interval)
-            elif _is_weekday(now) and _minutes(now) >= _CLOSE_MIN and not st.eod_sent:
+            elif after_close(now) and not st.eod_sent:
                 data = await compute_charts(settings, period="5m", source="live", days=1)
                 day_label = now.strftime("%a %b %d")  # e.g. "Mon Jun 16"
                 notifier.send(format_eod_summary(data["charts"], day_label))

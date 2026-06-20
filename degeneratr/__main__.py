@@ -165,6 +165,31 @@ def _print_coverage(cov: dict) -> None:
           f"{(o.get('from') or '?')[:16]} → {(o.get('to') or '?')[:16]}")
 
 
+async def _run_performance(args: argparse.Namespace) -> None:
+    from .config import get_settings
+    from .storage import BarStore, persist_trade_log
+
+    settings = get_settings()
+    store = BarStore(settings.bar_store_path)
+    if args.rebuild:
+        n = await persist_trade_log(settings, store=store)
+        print(f"persisted {n} round-trips to trade_log")
+    perf = store.performance_summary()
+    o = perf["overall"]
+    _pf = lambda v: "inf" if v is None else f"{v}"  # noqa: E731
+    print("\n=== algorithm performance (persisted trade log) ===")
+    print(f"  trades        : {o['trades']}  ({o['wins']}W / {o['losses']}L)")
+    print(f"  win rate      : {o['win_rate'] * 100:.1f}%")
+    print(f"  net P&L       : {o['net_pnl']:,.2f}")
+    print(f"  profit factor : {_pf(o['profit_factor'])}")
+    print(f"  expectancy    : {o['expectancy']:,.2f} per trade")
+    if perf["per_symbol"]:
+        print("  --- per symbol ---")
+        for sym, s in perf["per_symbol"].items():
+            print(f"    {sym:<6} {s['trades']:>4}t  {s['wins']}W/{s['losses']}L  "
+                  f"win {s['win_rate'] * 100:5.1f}%  net {s['net_pnl']:>11,.2f}  pf {_pf(s['profit_factor'])}")
+
+
 async def _run_watch(args: argparse.Namespace) -> None:
     from .notify import run_watch_loop
     from .notify.telegram import TelegramNotifier
@@ -246,6 +271,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--test", action="store_true",
                          help="send a single Telegram test ping and exit")
     p_watch.set_defaults(func=_run_watch)
+
+    p_perf = sub.add_parser("performance", help="show persisted trade-log performance")
+    p_perf.add_argument("--rebuild", action="store_true",
+                        help="replay the algorithm over the store and persist the trade log first")
+    p_perf.set_defaults(func=_run_performance)
 
     return parser
 

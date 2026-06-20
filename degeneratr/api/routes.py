@@ -55,6 +55,14 @@ async def coverage() -> dict:
     return BarStore(get_settings().bar_store_path).coverage()
 
 
+@router.get("/performance")
+async def performance() -> dict:
+    """Persisted trade-log performance — overall + per-symbol success metrics."""
+    from ..storage import BarStore
+
+    return BarStore(get_settings().bar_store_path).performance_summary()
+
+
 @router.get("/strategies")
 async def strategies() -> dict:
     return {

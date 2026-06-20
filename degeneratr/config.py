@@ -87,6 +87,18 @@ class Settings(BaseSettings):
     def watchlist_symbols(self) -> list[str]:
         return [s.strip().upper() for s in self.watchlist.split(",") if s.strip()]
 
+    # ---- Data pipeline (in-process ingestion + trade-log persistence) ----
+    # When true, `serve` runs a background task that seeds the store from yfinance
+    # once, then accrues bars from the configured provider during market hours and
+    # persists the trade log after the close. Intended for the deployed instance.
+    data_pipeline_enabled: bool = Field(default=False)
+    # Seconds between ingestion pulls during market hours.
+    ingest_interval_seconds: float = Field(default=300.0)
+    # Bar periods to ingest/seed (comma-separated; 15m is the strategy timeframe).
+    ingest_periods: str = Field(default="5m,15m")
+    # Rolling window (days) to pull each ingestion cycle — Tiger caps ~5d/call.
+    ingest_window_days: int = Field(default=5)
+
     # ---- Telegram notifications ----
     # Bot token from @BotFather and the chat id to deliver alerts to. The notifier
     # is inert (logs one warning) until both are set, so nothing breaks meanwhile.

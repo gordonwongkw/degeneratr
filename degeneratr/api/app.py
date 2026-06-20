@@ -43,6 +43,19 @@ def create_app() -> FastAPI:
             asyncio.create_task(run_watch_loop(settings))
             logging.getLogger("degeneratr.api").info("Telegram watcher task started")
 
+    # When the data pipeline is enabled (the deployed instance), seed the store
+    # from yfinance once, then accrue provider (Tiger) bars + persist the trade
+    # log in-process. Guarded so storage/provider issues never block startup.
+    if settings.data_pipeline_enabled:
+        import asyncio
+
+        from ..storage import run_data_pipeline
+
+        @app.on_event("startup")
+        async def _start_pipeline() -> None:  # pragma: no cover - background task
+            asyncio.create_task(run_data_pipeline(settings))
+            logging.getLogger("degeneratr.api").info("Data pipeline task started")
+
     # Serve the dashboard at the root. html=True makes "/" return index.html.
     app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
     return app
