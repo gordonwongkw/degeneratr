@@ -17,7 +17,6 @@ from ..data.factory import get_provider
 from ..marketclock import after_close, day_key, market_hours, now_et
 from ..strategies.price_action import PriceActionStrategy
 from .ingest import ingest_yfinance
-from .provider import StoreProvider
 from .store import BarStore
 
 logger = logging.getLogger("degeneratr.pipeline")
@@ -49,24 +48,64 @@ async def ingest_underlying(
     return total
 
 
-async def persist_trade_log(settings: Settings, *, store: BarStore) -> int:
-    """Replay the strategy over the accumulated store and upsert every round-trip
-    into ``trade_log`` (idempotent). The persisted record of how the algo did."""
+class _PreloadedProvider:
+    """Feed one symbol's already-loaded bars to the backtester (no DB re-read)."""
+
+    def __init__(self, symbol: str, bars: list) -> None:
+        self._symbol = symbol
+        self._bars = bars
+
+    async def get_bars(self, symbol, period, begin_time, end_time):
+        return self._bars if symbol == self._symbol else []
+
+    def __getattr__(self, name):
+        async def _noop(*a, **k):
+            return [] if "bars" not in name else {}
+        return _noop
+
+
+async def _persist_one(symbol: str, settings: Settings, store: BarStore) -> int:
+    """Replay one symbol's stored history into trade_log via the FAST path:
+    `series()` once (vectorized O(n)) + ReplaySignalStrategy through the
+    backtester — the same cheap path the charts use (not the O(n²) per-bar
+    `generate_signals`, which blocks)."""
     from ..backtester.underlying import UnderlyingBacktester
+    from ..strategies.replay import ReplaySignalStrategy
 
     end = datetime.now()
-    begin = end - timedelta(days=400)  # cover all stored history (datetime.min errors on Windows)
-    provider = StoreProvider(store)
-    saved = 0
-    for symbol in settings.watchlist_symbols:
-        try:
-            bt = UnderlyingBacktester(strategy=PriceActionStrategy(), provider=provider,
-                                      settings=settings)
-            result = await bt.run(symbol, begin, end, period=_SIGNAL_PERIOD)
-            saved += store.save_trades(symbol, result.round_trips)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("trade-log persist for %s failed: %s", symbol, exc)
-    return saved
+    begin = end - timedelta(days=400)  # all stored history (datetime.min errors on Windows)
+    bars = store.load_underlying(symbol, _SIGNAL_PERIOD.value, begin, end)
+    if len(bars) < 31:
+        return 0
+    strat = PriceActionStrategy()
+    ser = strat.series(bars)
+    bt = UnderlyingBacktester(
+        strategy=ReplaySignalStrategy(ser["score"], strat.min_score),
+        settings=settings, provider=_PreloadedProvider(symbol, bars),
+    )
+    result = await bt.run(symbol, bars[0].time, bars[-1].time, period=_SIGNAL_PERIOD)
+    return store.save_trades(symbol, result.round_trips)
+
+
+def _persist_blocking(settings: Settings, store: BarStore) -> int:
+    async def _all() -> int:
+        total = 0
+        for symbol in settings.watchlist_symbols:
+            try:
+                total += await _persist_one(symbol, settings, store)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("trade-log persist for %s failed: %s", symbol, exc)
+        return total
+
+    return asyncio.run(_all())
+
+
+async def persist_trade_log(settings: Settings, *, store: BarStore) -> int:
+    """Replay the strategy over the stored history and upsert every round-trip into
+    ``trade_log`` (idempotent). Runs in a **worker thread** — the backtest is
+    CPU-bound and must NOT run on the web server's event loop, or it starves the
+    health check and Render returns 502."""
+    return await asyncio.to_thread(_persist_blocking, settings, store)
 
 
 async def _seed_if_empty(settings: Settings, store: BarStore, periods: list[BarPeriod]) -> None:
