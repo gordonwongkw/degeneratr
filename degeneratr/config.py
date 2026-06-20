@@ -87,6 +87,16 @@ class Settings(BaseSettings):
     def watchlist_symbols(self) -> list[str]:
         return [s.strip().upper() for s in self.watchlist.split(",") if s.strip()]
 
+    # ---- Telegram notifications ----
+    # Bot token from @BotFather and the chat id to deliver alerts to. The notifier
+    # is inert (logs one warning) until both are set, so nothing breaks meanwhile.
+    telegram_bot_token: str = Field(default="")
+    telegram_chat_id: str = Field(default="")
+    # Master switch: when true, `serve` auto-starts the watcher as a background task.
+    telegram_enabled: bool = Field(default=False)
+    # Seconds between watcher polls during market hours.
+    watch_interval_seconds: float = Field(default=20.0)
+
     # ---- Misc ----
     log_level: str = Field(default="INFO")
     # In-memory cache TTL (seconds) for live bar/chain fetches. Historical bars

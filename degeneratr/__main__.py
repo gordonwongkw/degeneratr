@@ -165,6 +165,23 @@ def _print_coverage(cov: dict) -> None:
           f"{(o.get('from') or '?')[:16]} → {(o.get('to') or '?')[:16]}")
 
 
+async def _run_watch(args: argparse.Namespace) -> None:
+    from .notify import run_watch_loop
+    from .notify.telegram import TelegramNotifier
+
+    if args.test:
+        ok = TelegramNotifier().send(
+            "✅ degeneratr watcher online — Telegram is configured."
+        )
+        print(
+            "test ping sent."
+            if ok
+            else "test ping NOT sent — check TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in .env."
+        )
+        return
+    await run_watch_loop()
+
+
 def _run_serve(args: argparse.Namespace) -> None:
     import uvicorn
 
@@ -224,6 +241,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--port", type=int, default=8000)
     p_serve.add_argument("--reload", action="store_true")
     p_serve.set_defaults(func=_run_serve)
+
+    p_watch = sub.add_parser("watch", help="poll live data and push Telegram alerts")
+    p_watch.add_argument("--test", action="store_true",
+                         help="send a single Telegram test ping and exit")
+    p_watch.set_defaults(func=_run_watch)
 
     return parser
 

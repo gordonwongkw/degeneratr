@@ -29,6 +29,20 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(router)
+
+    # When Telegram is enabled, run the market-hours watcher as a background task
+    # so `serve` alone delivers alerts (no separate `watch` process needed). Inert
+    # otherwise, and guarded so a missing token never blocks startup.
+    if settings.telegram_enabled:
+        import asyncio
+
+        from ..notify import run_watch_loop
+
+        @app.on_event("startup")
+        async def _start_watcher() -> None:  # pragma: no cover - background task
+            asyncio.create_task(run_watch_loop(settings))
+            logging.getLogger("degeneratr.api").info("Telegram watcher task started")
+
     # Serve the dashboard at the root. html=True makes "/" return index.html.
     app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
     return app

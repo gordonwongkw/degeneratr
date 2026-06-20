@@ -2,24 +2,24 @@
 
 const $ = (id) => document.getElementById(id);
 // ---- formatting helpers ----
-const money = (v) => (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 });
 const money2 = (v) => (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const pct = (v) => (v >= 0 ? "+" : "") + v.toFixed(2) + "%";
-const expShort = (e) => (e && e.length >= 10 ? e.slice(5) : (e || "—"));
-const fmtStrike = (s) => (s ? s.toLocaleString(undefined, { maximumFractionDigits: 1 }) : "—");
-const fmtTime = (iso) => iso.replace("T", " ").slice(5, 16);
-const fmtAxis = (iso) => (iso ? iso.slice(5, 10) + " " + iso.slice(11, 16) : ""); // MM-DD HH:MM
-const contractLabel = (t) => `${t.right || "?"} ${fmtStrike(t.strike)} ${expShort(t.expiry)}`;
-const pnlPct = (t) => (t.entry_price > 0 ? (t.pnl / (t.entry_price * t.qty * 100)) * 100 : 0);
 const pctStr = (v) => (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
 
 // ============ CHARTS TAB (lightweight-charts) ============
-let chartsRegistry = [];   // [{symbol, chart, series:{}, markers:[]}]
+let chartsRegistry = [];   // [{symbol, chart, series, ...}]
 let chartsLoaded = false;
+let lastCharts = [];       // raw chart dicts from the most recent load/tick (for re-sort + tape)
 
 const IND_COLORS = {
   ema_fast: "#4c8dff", ema_slow: "#e0a23c",
   vwap: "#b06cf0", bb_upper: "rgba(146,155,171,0.55)", bb_lower: "rgba(146,155,171,0.55)",
+};
+// High-contrast marker palette (item #1 — exits/signals were too dull to see).
+const MK = {
+  sigBull: "#19e29b", sigBear: "#ff4d5e",
+  entLong: "#4c8dff", entShort: "#c884ff",
+  exitWin: "#19e29b", exitLoss: "#ff4d5e",
 };
 
 function destroyCharts() {
@@ -28,16 +28,62 @@ function destroyCharts() {
   $("charts-grid").innerHTML = "";
 }
 
-// epoch (UTC seconds) -> "MM-DD HH:MM" matching the bar wall-clock
-const fmtEpoch = (t) => {
-  const d = new Date(t * 1000), p = (n) => String(n).padStart(2, "0");
-  return `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
-};
+// epoch (UTC seconds) -> ET wall clock parts (bar time is ET-wall-clock-as-UTC)
+const _p2 = (n) => String(n).padStart(2, "0");
+const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const fmtEpoch = (t) => { const d = new Date(t * 1000); return `${_p2(d.getUTCMonth() + 1)}-${_p2(d.getUTCDate())} ${_p2(d.getUTCHours())}:${_p2(d.getUTCMinutes())}`; };
+const fmtFull = fmtEpoch;
+const dayKey = (t) => { const d = new Date(t * 1000); return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`; };
+const dayLabel = (t) => { const d = new Date(t * 1000); return `${WD[d.getUTCDay()]} ${d.getUTCMonth() + 1}/${d.getUTCDate()}`; };
+
 const BARS_PER_DAY = { "1m": 390, "5m": 78, "15m": 26, "30m": 13, "1h": 7 };
 
-function tradeLogHTML(c) {
-  if (!c.trades.length) return `<div class="no-trades">No trades in this window.</div>`;
-  const rows = c.trades.map((t) => {
+// Group candles into trading days (item #5 separators + #6 day selector).
+function computeDays(candles) {
+  const days = [];
+  let cur = null;
+  candles.forEach((b, i) => {
+    const k = dayKey(b.time);
+    if (!cur || cur.key !== k) {
+      if (cur) days.push(cur);
+      cur = { key: k, label: dayLabel(b.time), fromTime: b.time, toTime: b.time, fromIdx: i, toIdx: i };
+    } else { cur.toTime = b.time; cur.toIdx = i; }
+  });
+  if (cur) days.push(cur);
+  return days;
+}
+
+// ---- ranking (#8) ----
+const METRIC = {
+  atr: (c) => c.atr_pct || 0,
+  day: (c) => Math.abs(c.day_change_pct || 0),
+  trades: (c) => (c.trades ? c.trades.length : 0),
+  net: (c) => c.net_pnl || 0,
+};
+function sortCharts(charts, metric) {
+  const f = METRIC[metric] || METRIC.atr;
+  return [...charts].sort((a, b) => f(b) - f(a));
+}
+// Re-order existing DOM cards by metric without rebuilding the charts (keeps zoom/state).
+function reorderCards(metric) {
+  const f = METRIC[metric] || METRIC.atr;
+  const grid = $("charts-grid");
+  [...chartsRegistry]
+    .sort((a, b) => f(b.metrics) - f(a.metrics))
+    .forEach((e) => grid.appendChild(e.el.closest(".chart-card")));
+}
+const metricChip = (c) => {
+  const m = $("c-sort").value;
+  if (m === "day") return `${pct(c.day_change_pct || 0)} today`;
+  if (m === "trades") return `${c.trades ? c.trades.length : 0} trades`;
+  if (m === "net") return money2(c.net_pnl || 0);
+  return `ATR ${(c.atr_pct || 0).toFixed(2)}%`;
+};
+
+// ---- trade log (filtered to the selected day, #6) ----
+function tradeRowsHTML(trades) {
+  if (!trades.length) return `<div class="no-trades">No trades on this day.</div>`;
+  const rows = trades.map((t) => {
     const cls = t.dir === "bull" ? "call" : "put";
     return `<tr>
       <td class="num">${t.n}</td>
@@ -56,17 +102,149 @@ function tradeLogHTML(c) {
       <th>Exit</th><th class="num">Out $</th><th class="num">P&amp;L</th><th class="num">%</th><th>Exit</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
 }
+const tradesOnDay = (trades, key) => (key === "all" ? trades : trades.filter((t) => dayKey(t.entry_time) === key));
+
+// Refresh a card's trade log, summary line, entry→exit links and zoom for the
+// selected day (links are only drawn for this day's trades — cheap).
+function applyDay(entry) {
+  const sel = entry.daySel.value;
+  const trades = tradesOnDay(entry.trades, sel);
+  entry.logBody.innerHTML = tradeRowsHTML(trades);
+  const net = trades.reduce((a, t) => a + t.pnl, 0);
+  entry.logSummary.innerHTML =
+    `Trade log — ${trades.length} round-trips · <em class="${net >= 0 ? "pos" : "neg"}">${money2(net)}</em>` +
+    (sel === "all" ? "" : ` · ${dayLabel(entry.days.find((d) => d.key === sel)?.fromTime || 0)}`);
+  buildLinks(entry, trades);
+  // Zoom the chart to the selected day (full series stays loaded; pan still works).
+  if (sel !== "all") {
+    const d = entry.days.find((x) => x.key === sel);
+    if (d) entry.chart.timeScale().setVisibleRange({ from: d.fromTime, to: d.toTime + 60 });
+  }
+}
+
+// Most recent day that actually has trades; else the most recent day; else "all".
+function defaultDayKey(entry) {
+  const tradeDays = new Set(entry.trades.map((t) => dayKey(t.entry_time)));
+  for (let i = entry.days.length - 1; i >= 0; i--) {
+    if (tradeDays.has(entry.days[i].key)) return entry.days[i].key;
+  }
+  return entry.days.length ? entry.days[entry.days.length - 1].key : "all";
+}
+function buildDayOptions(entry) {
+  const opts = entry.days.slice().reverse()
+    .map((d) => `<option value="${d.key}">${d.label}</option>`).join("");
+  entry.daySel.innerHTML = opts + `<option value="all">All days</option>`;
+  // default to the most recent day with trades, so the log isn't empty when the
+  // 5m candles are fresher than the 15m trade data (or on a no-trade session).
+  entry.daySel.value = defaultDayKey(entry);
+}
+
+// ---- vertical session separators primitive (#5) ----
+function makeSessionSep(getDays) {
+  let chart = null;
+  const view = {
+    zOrder: () => "bottom",
+    renderer: () => ({
+      draw: (target) => {
+        if (!chart) return;
+        target.useMediaCoordinateSpace((scope) => {
+          const ctx = scope.context;
+          const ts = chart.timeScale();
+          const h = scope.mediaSize.height;
+          ctx.save();
+          getDays().forEach((d) => {
+            const x = ts.timeToCoordinate(d.fromTime);
+            if (x === null) return;
+            ctx.strokeStyle = "rgba(146,155,171,0.20)";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 4]);
+            ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, h); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = "rgba(180,188,200,0.85)";
+            ctx.font = "600 10px Inter, sans-serif";
+            ctx.fillText(d.label, x + 5, h - 7);
+          });
+          ctx.restore();
+        });
+      },
+    }),
+  };
+  return {
+    attached: (p) => { chart = p.chart; },
+    detached: () => { chart = null; },
+    updateAllViews: () => {},
+    paneViews: () => [view],
+  };
+}
+
+// Signature of a trade list — lets live mode skip rebuilding when nothing changed.
+const tradeSig = (trades) => trades.length + ":" + (trades.length ? trades[trades.length - 1].exit_time : 0);
+
+// Trade markers cover ALL trades (one cheap setMarkers call). Entry→exit LINK
+// series are expensive (one series each), so they're built per selected day in
+// applyDay() — not for the whole 60-day window — which keeps the chart fast.
+function buildTradeMarkers(entry, trades) {
+  const tradeMarkers = [];
+  trades.forEach((t) => {
+    tradeMarkers.push({
+      time: t.entry_time, position: t.dir === "bull" ? "belowBar" : "aboveBar",
+      color: t.dir === "bull" ? MK.entLong : MK.entShort,
+      shape: t.dir === "bull" ? "arrowUp" : "arrowDown", text: "#" + t.n, size: 1.4,
+    });
+    tradeMarkers.push({
+      time: t.exit_time, position: t.win ? "aboveBar" : "belowBar",
+      color: t.win ? MK.exitWin : MK.exitLoss, shape: "circle", size: 1.8,
+    });
+  });
+  entry.tradeMarkers = tradeMarkers;
+  entry.entryByTime = groupByTime(trades, "entry_time");
+  entry.exitByTime = groupByTime(trades, "exit_time");
+}
+function buildLinks(entry, trades) {
+  (entry.links || []).forEach((s) => { try { entry.chart.removeSeries(s); } catch (e) {} });
+  const links = [];
+  trades.forEach((t) => {
+    if (t.entry_time >= t.exit_time) return;
+    const s = entry.chart.addLineSeries({
+      color: t.win ? "rgba(34,211,238,0.9)" : "rgba(251,113,133,0.9)",
+      lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false, autoscaleInfoProvider: () => null,
+    });
+    s.setData([
+      { time: t.entry_time, value: t.entry_price },
+      { time: t.exit_time, value: t.exit_price },
+    ]);
+    links.push(s);
+  });
+  entry.links = links;
+  const showLinks = (!$("t-links") || $("t-links").checked) && $("t-trades").checked;
+  entry.links.forEach((s) => s.applyOptions({ visible: showLinks }));
+}
+function buildSignalMarkers(signals) {
+  return signals.map((s) => ({
+    time: s.time, position: s.dir === "bull" ? "belowBar" : "aboveBar",
+    color: s.dir === "bull" ? MK.sigBull : MK.sigBear,
+    shape: s.dir === "bull" ? "arrowUp" : "arrowDown", text: "", size: 1.2,
+  }));
+}
+const groupByTime = (trades, key) => {
+  const m = new Map();
+  trades.forEach((t) => { if (!m.has(t[key])) m.set(t[key], []); m.get(t[key]).push(t); });
+  return m;
+};
 
 function makeChart(c, period) {
   const card = document.createElement("div");
   card.className = "chart-card";
-  const chg = c.change_pct >= 0 ? "pos" : "neg";
+  const chg = c.day_change_pct >= 0 ? "pos" : "neg";
   const netCls = c.net_pnl >= 0 ? "pos" : "neg";
   card.innerHTML =
     `<div class="chart-card-head">
        <span class="sym">${c.symbol}</span>
-       <span class="last">${money2(c.last)} <em class="chg ${chg}">${pct(c.change_pct)}</em></span>
+       <span class="last">${money2(c.last)} <em class="chg ${chg}">${pct(c.day_change_pct)}</em></span>
+       <span class="metric-chip">${metricChip(c)}</span>
        <span class="sig-count">${c.trades.length} trades · <em class="${netCls}">${money2(c.net_pnl)}</em></span>
+       <label class="day-pick">Day <select class="day-sel"></select></label>
      </div>
      <div class="lwc-wrap">
        <div class="chart-legend">
@@ -78,8 +256,8 @@ function makeChart(c, period) {
        <div class="lwc" id="lwc-${c.symbol}"></div>
      </div>
      <details class="trade-log">
-       <summary>Trade log — ${c.trades.length} round-trips (entry → exit, P&amp;L)</summary>
-       ${tradeLogHTML(c)}
+       <summary class="log-summary">Trade log</summary>
+       <div class="log-body"></div>
      </details>`;
   $("charts-grid").appendChild(card);
 
@@ -90,7 +268,7 @@ function makeChart(c, period) {
     grid: { vertLines: { color: "rgba(128,128,128,0.05)" }, horzLines: { color: "rgba(128,128,128,0.07)" } },
     timeScale: {
       timeVisible: true, secondsVisible: false, borderColor: "rgba(128,128,128,0.18)",
-      barSpacing: 13, minBarSpacing: 4, rightOffset: 6,  // readable candle width, can't go hairline
+      barSpacing: 11, minBarSpacing: 4, rightOffset: 6,
     },
     rightPriceScale: { borderColor: "rgba(128,128,128,0.18)", autoScale: true },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
@@ -108,8 +286,6 @@ function makeChart(c, period) {
       color: IND_COLORS[key], lineWidth: width, priceLineVisible: false,
       lastValueVisible: false, crosshairMarkerVisible: false,
       lineStyle: dashed ? LightweightCharts.LineStyle.Dotted : LightweightCharts.LineStyle.Solid,
-      // Don't let indicators (esp. the wide Bollinger band) stretch the price
-      // axis — the candles drive the scale so they fill the height.
       autoscaleInfoProvider: () => null,
     });
     s.setData(c.indicators[key] || []);
@@ -119,77 +295,47 @@ function makeChart(c, period) {
   addLine("vwap", 1, true);
   addLine("bb_upper", 1); addLine("bb_lower", 1);
 
-  // Raw signal-onset markers (every bull/bear flip).
-  const signalMarkers = c.signals.map((s) => ({
-    time: s.time,
-    position: s.dir === "bull" ? "belowBar" : "aboveBar",
-    color: s.dir === "bull" ? "#3a7d63" : "#a14647",
-    shape: s.dir === "bull" ? "arrowUp" : "arrowDown",
-    text: "",
-  }));
-  // Trade markers — clean: entry = a small direction arrow with the trade #,
-  // exit = a small win/loss dot. No floating P&L text (it cluttered the chart
-  // and collided when trades exited on the same bar); the P&L shows on hover and
-  // in the trade log. Wins sit above the bar, losses below, so a same-bar
-  // win+loss never overlap.
-  const tradeMarkers = [];
-  c.trades.forEach((t) => {
-    tradeMarkers.push({
-      time: t.entry_time, position: t.dir === "bull" ? "belowBar" : "aboveBar",
-      color: t.dir === "bull" ? "#4c8dff" : "#b06cf0",
-      shape: t.dir === "bull" ? "arrowUp" : "arrowDown", text: "#" + t.n,
-    });
-    tradeMarkers.push({
-      time: t.exit_time, position: t.win ? "aboveBar" : "belowBar",
-      color: t.win ? "#21b582" : "#f0595a", shape: "circle",
-    });
-  });
-
-  // Subtle entry→exit connector for each trade, so a trade is easy to trace.
-  // Cyan = win, rose = loss — hues picked to not clash with EMA (blue/amber),
-  // VWAP (purple), Bollinger (gray), or the green/red candles.
-  const links = [];
-  c.trades.forEach((t) => {
-    if (t.entry_time >= t.exit_time) return;
-    const s = chart.addLineSeries({
-      color: t.win ? "rgba(34,211,238,0.9)" : "rgba(251,113,133,0.9)",
-      lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false, autoscaleInfoProvider: () => null,
-    });
-    s.setData([
-      { time: t.entry_time, value: t.entry_price },
-      { time: t.exit_time, value: t.exit_price },
-    ]);
-    links.push(s);
-  });
-
-  // Group trades by time so same-bar entries/exits are ALL captured (the old
-  // Map kept only the last one, so colliding trades lost their tooltip).
-  const groupByTime = (key) => {
-    const m = new Map();
-    c.trades.forEach((t) => { if (!m.has(t[key])) m.set(t[key], []); m.get(t[key]).push(t); });
-    return m;
-  };
   const entry = {
-    symbol: c.symbol, el, chart, candle, series, signalMarkers, tradeMarkers, links,
+    symbol: c.symbol, el, chart, candle, series,
+    days: computeDays(c.candles),
+    trades: c.trades,
+    links: [],
+    signalMarkers: buildSignalMarkers(c.signals),
     lastSignalTime: c.signals.length ? c.signals[c.signals.length - 1].time : 0,
     lastBarTime: c.candles.length ? c.candles[c.candles.length - 1].time : 0,
+    lastPrice: c.last,
+    tradeSig: tradeSig(c.trades),
     sigByTime: new Map(c.signals.map((s) => [s.time, s])),
-    entryByTime: groupByTime("entry_time"),
-    exitByTime: groupByTime("exit_time"),
+    metrics: c,
+    card,
+    daySel: card.querySelector(".day-sel"),
+    logBody: card.querySelector(".log-body"),
+    logSummary: card.querySelector(".log-summary"),
   };
+
+  // vertical day separators (reads entry.days live, so it stays correct on updates)
+  if (candle.attachPrimitive) {
+    try { candle.attachPrimitive(makeSessionSep(() => entry.days)); } catch (e) {}
+  }
+
+  buildTradeMarkers(entry, c.trades);
+  buildDayOptions(entry);
+  entry.daySel.addEventListener("change", () => applyDay(entry));
   chartsRegistry.push(entry);
   applyToggles(entry);
+  applyDay(entry);   // builds the selected day's links + trade log
   wireTooltip(entry);
-  // Size after layout settles, then anchor to the most recent bars. Candle
-  // width is governed by barSpacing/minBarSpacing, so it stays readable and
-  // scales with the chart instead of cramming the whole window in.
+
   requestAnimationFrame(() => {
     chart.applyOptions({ width: el.clientWidth, height: el.clientHeight || 340 });
-    // open on roughly the most recent trading day (zoom buttons change this)
-    const perDay = BARS_PER_DAY[period] || 78;
-    const total = c.candles.length;
-    chart.timeScale().setVisibleLogicalRange({ from: total - Math.min(total, perDay), to: total + 2 });
+    // open on the selected day (most recent day with trades) once layout settles
+    const sel = entry.daySel.value;
+    const d = entry.days.find((x) => x.key === sel) || entry.days[entry.days.length - 1];
+    if (d) chart.timeScale().setVisibleRange({ from: d.fromTime, to: d.toTime + 60 });
+    else {
+      const perDay = BARS_PER_DAY[period] || 78, total = c.candles.length;
+      chart.timeScale().setVisibleLogicalRange({ from: total - Math.min(total, perDay), to: total + 2 });
+    }
   });
 }
 
@@ -209,10 +355,6 @@ function chartTooltipEl() {
   let el = document.getElementById("lwc-tt");
   if (!el) { el = document.createElement("div"); el.id = "lwc-tt"; el.className = "lwc-tt"; document.body.appendChild(el); }
   return el;
-}
-function fmtFull(t) {
-  const d = new Date(t * 1000), p = (n) => String(n).padStart(2, "0");
-  return `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
 }
 function wireTooltip(entry) {
   const tt = chartTooltipEl();
@@ -284,7 +426,6 @@ function applyToggles(entry) {
   entry.series.vwap.applyOptions({ visible: showVwap });
   entry.series.bb_upper.applyOptions({ visible: showBb });
   entry.series.bb_lower.applyOptions({ visible: showBb });
-  // keep the on-chart legend in sync with what's shown
   const card = entry.el.closest(".chart-card");
   card.querySelectorAll(".leg-ema").forEach((x) => x.classList.toggle("off", !showEma));
   card.querySelector(".leg-vwap").classList.toggle("off", !showVwap);
@@ -296,6 +437,20 @@ function applyToggles(entry) {
   if (showTrades) markers = markers.concat(entry.tradeMarkers);
   markers.sort((a, b) => a.time - b.time);
   entry.candle.setMarkers(markers);
+}
+
+// ---- ticker tape (#9) ----
+function renderTickerTape(charts) {
+  const tape = $("ticker-tape");
+  if (!tape || !charts.length) return;
+  const item = (c) => {
+    const cls = (c.day_change_pct || 0) >= 0 ? "pos" : "neg";
+    const arrow = (c.day_change_pct || 0) >= 0 ? "▲" : "▼";
+    return `<span class="tape-item"><b>${c.symbol}</b> ${money2(c.last)} ` +
+      `<em class="${cls}">${arrow} ${pct(c.day_change_pct || 0)}</em></span>`;
+  };
+  const row = charts.map(item).join("");
+  tape.innerHTML = `<div class="tape-track">${row}${row}</div>`;
 }
 
 async function loadCharts() {
@@ -315,7 +470,11 @@ async function loadCharts() {
       return;
     }
     $("charts-empty").classList.add("hidden");
-    data.charts.forEach((c) => makeChart(c, data.period));
+    lastCharts = data.charts;
+    const sorted = sortCharts(data.charts, $("c-sort").value);
+    sorted.forEach((c) => makeChart(c, data.period));
+    renderTickerTape(sorted);
+    syncLogToggleLabel();
     wireChartsResize();
     chartsLoaded = true;
     const totalTrades = data.charts.reduce((a, c) => a + c.trades.length, 0);
@@ -330,7 +489,7 @@ async function loadCharts() {
   }
 }
 
-// ============ LIVE MODE (poll Tiger during market hours) ============
+// ============ LIVE MODE (poll during market hours) ============
 let liveTimer = null;
 const LIVE_INTERVAL_MS = 20000;
 
@@ -343,45 +502,70 @@ function setLiveUI(on) {
 function flashCard(entry, dir) {
   const card = entry.el.closest(".chart-card");
   card.classList.remove("flash-bull", "flash-bear");
-  // reflow so the animation restarts even on back-to-back signals
   void card.offsetWidth;
   card.classList.add(dir === "bull" ? "flash-bull" : "flash-bear");
   setTimeout(() => card.classList.remove("flash-bull", "flash-bear"), 1800);
+}
+// subtle directional blink on every update (#7)
+function pulseCard(entry, dir) {
+  const card = entry.el.closest(".chart-card");
+  const cls = dir > 0 ? "pulse-up" : "pulse-down";
+  card.classList.remove("pulse-up", "pulse-down");
+  void card.offsetWidth;
+  card.classList.add(cls);
+  setTimeout(() => card.classList.remove(cls), 750);
 }
 
 async function liveTick() {
   try {
     const period = $("c-period").value;
-    const data = await (await fetch(`/api/charts?period=${period}&source=live&days=3&light=1`)).json();
+    // full payload (no light=1) so trades/entries refresh automatically (#2)
+    const data = await (await fetch(`/api/charts?period=${period}&source=live&days=3`)).json();
+    lastCharts = data.charts;
     const now = new Date();
     const newSignals = [];
     data.charts.forEach((c) => {
       const e = chartsRegistry.find((x) => x.symbol === c.symbol);
       if (!e) return;
-      // Incrementally update only the current/new bars (update() can't touch
-      // history). Wrapped so an out-of-order point never breaks the tick.
+      // incrementally update candles + indicators
       const from = e.lastBarTime || 0;
-      c.candles.filter((b) => b.time >= from).forEach((bar) => {
-        try { e.candle.update(bar); } catch (x) {}
-      });
+      c.candles.filter((b) => b.time >= from).forEach((bar) => { try { e.candle.update(bar); } catch (x) {} });
       ["ema_fast", "ema_slow", "vwap", "bb_upper", "bb_lower"].forEach((k) =>
-        (c.indicators[k] || []).filter((p) => p.time >= from).forEach((p) => {
-          try { e.series[k].update(p); } catch (x) {}
-        }));
+        (c.indicators[k] || []).filter((p) => p.time >= from).forEach((p) => { try { e.series[k].update(p); } catch (x) {} }));
       if (c.candles.length) e.lastBarTime = c.candles[c.candles.length - 1].time;
-      // Rebuild signal markers (trade markers are left from the last full load).
-      e.signalMarkers = c.signals.map((s) => ({
-        time: s.time, position: s.dir === "bull" ? "belowBar" : "aboveBar",
-        color: s.dir === "bull" ? "#3a7d63" : "#a14647",
-        shape: s.dir === "bull" ? "arrowUp" : "arrowDown", text: "",
-      }));
+
+      // refresh days + trades/markers/log only when something actually changed
+      const prevDayCount = e.days.length;
+      e.days = computeDays(c.candles);
+      e.metrics = c;
+      e.trades = c.trades;
+      const sig = tradeSig(c.trades);
+      const tradesChanged = sig !== e.tradeSig;
+      const daysChanged = e.days.length !== prevDayCount;
+      if (tradesChanged) { e.tradeSig = sig; buildTradeMarkers(e, c.trades); }
+      e.signalMarkers = buildSignalMarkers(c.signals);
       e.sigByTime = new Map(c.signals.map((s) => [s.time, s]));
+      if (daysChanged) {
+        const keep = e.daySel.value;
+        buildDayOptions(e);
+        if ([...e.daySel.options].some((o) => o.value === keep)) e.daySel.value = keep;
+      }
       applyToggles(e);
-      // Header: live last price + change.
+      if (tradesChanged || daysChanged) applyDay(e);
+
+      // header: live last price + today's change + metric chip
       const card = e.el.closest(".chart-card");
       card.querySelector(".last").innerHTML =
-        `${money2(c.last)} <em class="chg ${c.change_pct >= 0 ? "pos" : "neg"}">${pct(c.change_pct)}</em>`;
-      // New signal since last tick?
+        `${money2(c.last)} <em class="chg ${c.day_change_pct >= 0 ? "pos" : "neg"}">${pct(c.day_change_pct)}</em>`;
+      card.querySelector(".metric-chip").textContent = metricChip(c);
+      card.querySelector(".sig-count").innerHTML =
+        `${c.trades.length} trades · <em class="${c.net_pnl >= 0 ? "pos" : "neg"}">${money2(c.net_pnl)}</em>`;
+
+      // directional blink (#7)
+      if (e.lastPrice != null && c.last !== e.lastPrice) pulseCard(e, c.last - e.lastPrice);
+      e.lastPrice = c.last;
+
+      // new signal since last tick? → strong flash + notify
       const latest = c.signals.length ? c.signals[c.signals.length - 1] : null;
       if (latest && latest.time > (e.lastSignalTime || 0)) {
         e.lastSignalTime = latest.time;
@@ -389,6 +573,8 @@ async function liveTick() {
         newSignals.push(`${c.symbol} ${latest.dir.toUpperCase()}`);
       }
     });
+    reorderCards($("c-sort").value);
+    renderTickerTape(sortCharts(data.charts, $("c-sort").value));
     const mkt = data.market_open ? "market open" : "market closed";
     $("charts-status").innerHTML =
       `<span class="live-pulse"></span> LIVE · updated ${now.toLocaleTimeString()} · ${mkt}` +
@@ -410,7 +596,6 @@ async function toggleLive() {
     $("charts-status").textContent = "Live stopped.";
     return;
   }
-  // turn ON: full reload from live, then poll
   if (window.Notification && Notification.permission === "default") {
     try { Notification.requestPermission(); } catch (e) {}
   }
@@ -422,6 +607,18 @@ async function toggleLive() {
   liveTimer = setInterval(liveTick, LIVE_INTERVAL_MS);
 }
 
+// ---- expand / collapse all trade logs (#10) ----
+let _logsOpen = false;
+function syncLogToggleLabel() {
+  const btn = $("toggle-logs");
+  if (btn) btn.textContent = _logsOpen ? "Collapse all" : "Expand all";
+}
+function toggleAllLogs() {
+  _logsOpen = !_logsOpen;
+  document.querySelectorAll(".chart-card .trade-log").forEach((d) => { d.open = _logsOpen; });
+  syncLogToggleLabel();
+}
+
 // ---- wire up ----
 $("charts-btn").addEventListener("click", () => { if (liveTimer) toggleLive(); loadCharts(); });
 $("live-btn").addEventListener("click", toggleLive);
@@ -429,6 +626,10 @@ $("live-btn").addEventListener("click", toggleLive);
   if (liveTimer) { clearInterval(liveTimer); liveTimer = null; setLiveUI(false); }
   loadCharts();
 }));
+$("c-sort").addEventListener("change", () => {
+  if (chartsLoaded) { reorderCards($("c-sort").value); renderTickerTape(sortCharts(lastCharts, $("c-sort").value)); chartsRegistry.forEach((e) => e.card.querySelector(".metric-chip").textContent = metricChip(e.metrics)); }
+});
+$("toggle-logs").addEventListener("click", toggleAllLogs);
 ["t-ema", "t-vwap", "t-bb", "t-sig", "t-trades", "t-links"].forEach((id) =>
   $(id).addEventListener("change", () => chartsRegistry.forEach(applyToggles)));
 document.querySelectorAll(".zoom button[data-zoom]").forEach((b) =>
@@ -438,14 +639,16 @@ document.querySelectorAll(".zoom button[data-zoom]").forEach((b) =>
     setZoom(parseInt(b.dataset.zoom, 10));
   }));
 
-// ---- US market status (live ET clock, open/closed) ----
+// ---- US market status (live ET clock with trading day + seconds, #12) ----
 function updateMarketStatus() {
-  const p = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York", weekday: "short", hour: "2-digit",
-    minute: "2-digit", hour12: false,
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York", weekday: "short", month: "numeric", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
   }).formatToParts(new Date());
-  const get = (t) => (p.find((x) => x.type === t) || {}).value;
-  const wd = get("weekday"), hh = +get("hour"), mm = +get("minute");
+  const get = (t) => (parts.find((x) => x.type === t) || {}).value;
+  const wd = get("weekday"), mo = get("month"), dy = get("day");
+  let hh = +get("hour"); const mm = +get("minute"), ss = +get("second");
+  if (hh === 24) hh = 0;
   const weekday = !["Sat", "Sun"].includes(wd);
   const mins = hh * 60 + mm;
   const open = weekday && mins >= 9 * 60 + 30 && mins < 16 * 60;
@@ -453,9 +656,9 @@ function updateMarketStatus() {
   el.classList.toggle("open", open);
   el.classList.toggle("closed", !open);
   el.querySelector(".mkt-label").textContent = open ? "Market Open" : "Market Closed";
-  $("mkt-clock").textContent = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")} ET`;
+  $("mkt-clock").textContent = `${wd} ${mo}/${dy} · ${_p2(hh)}:${_p2(mm)}:${_p2(ss)} ET`;
 }
 updateMarketStatus();
-setInterval(updateMarketStatus, 15000);
+setInterval(updateMarketStatus, 1000);
 
 loadCharts();

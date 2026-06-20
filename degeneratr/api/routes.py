@@ -12,6 +12,7 @@ from ..backtester.underlying import UnderlyingBacktester
 from ..config import Settings, get_settings
 from ..data.base import Bar, BarPeriod
 from ..data.factory import get_provider
+from ..indicators.technical import atr as _atr_ind, bars_to_frame
 from ..risk.manager import RiskManager
 from ..scanner.universe import TickerScanner
 from ..strategies import ALGORITHM_NAME, COMPONENT_STRATEGIES, STRATEGY_REGISTRY
@@ -258,9 +259,24 @@ async def _chart_for(symbol, candle_bars: list[Bar], strat_bars: list[Bar], stra
 
     last = candle_bars[-1].close if candle_bars else 0.0
     first = candle_bars[0].close if candle_bars else 0.0
+    # ---- ranking metrics (consumed by the "Sort by" dropdown) ----
+    # ATR% = average true range (on the strat bars) as a % of price — the
+    # cleanest volatility proxy and the default ranking.
+    atr_val = _atr_ind(bars_to_frame(strat_bars), 14) if len(strat_bars) >= 15 else None
+    atr_pct = round(atr_val / last * 100, 3) if (atr_val and last) else 0.0
+    # Today's session change: from the first bar of the most recent trading day
+    # to the last price (distinct from change_pct, which spans the whole window).
+    day_change_pct = 0.0
+    if candle_bars:
+        last_day = candle_bars[-1].time.date()
+        day_open = next((b.open for b in candle_bars if b.time.date() == last_day), None)
+        if day_open:
+            day_change_pct = round((last / day_open - 1) * 100, 2)
     return {
         "symbol": symbol, "bars": len(candle_bars),
         "last": round(last, 2), "change_pct": round((last / first - 1) * 100, 2) if first else 0.0,
+        "atr_pct": atr_pct, "day_change_pct": day_change_pct,
+        "signal_count": len(signals),
         "candles": candles,
         "indicators": {
             "ema_fast": _line(dtimes, disp["ema_fast"]),
@@ -289,17 +305,17 @@ def _market_open(now_utc: datetime) -> bool:
 _LIVE_MAX_DAYS = {"1m": 1, "5m": 4, "15m": 7, "30m": 14, "1h": 30, "1d": 365}
 
 
-@router.get("/charts")
-async def charts(period: str = "5m", source: str = "store", days: int = 60,
-                 light: bool = False, signal_period: str = "15m") -> dict:
-    """Per-ticker chart data for the watchlist.
+async def compute_charts(settings: Settings, period: str = "5m", source: str = "store",
+                         days: int = 60, light: bool = False,
+                         signal_period: str = "15m") -> dict:
+    """Build per-ticker chart data for the watchlist (shared by the HTTP route
+    and the Telegram watcher, so both run the exact same signal/trade logic).
 
     ``period`` = candle (display) timeframe; ``signal_period`` = the timeframe the
     strategy/indicators/signals run on (15m backtests best). ``light=true`` skips
     the per-ticker backtest for fast live polling; ``source=live`` pulls fresh
     (uncached) Tiger data.
     """
-    settings = get_settings()
     candle_period = _PERIODS.get(period)
     strat_period = _PERIODS.get(signal_period)
     if candle_period is None or strat_period is None:
@@ -334,6 +350,14 @@ async def charts(period: str = "5m", source: str = "store", days: int = 60,
     return {"period": period, "signal_period": signal_period, "source": source, "light": light,
             "market_open": _market_open(datetime.utcnow()),
             "symbols": [c["symbol"] for c in out], "charts": out}
+
+
+@router.get("/charts")
+async def charts(period: str = "5m", source: str = "store", days: int = 60,
+                 light: bool = False, signal_period: str = "15m") -> dict:
+    """HTTP wrapper over :func:`compute_charts` for the dashboard."""
+    return await compute_charts(get_settings(), period=period, source=source,
+                                days=days, light=light, signal_period=signal_period)
 
 
 @router.get("/scan", response_model=ScanResponse)

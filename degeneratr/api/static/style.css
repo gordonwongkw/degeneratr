@@ -76,8 +76,8 @@ body {
 .dotnav { width: 7px; height: 7px; border-radius: 50%; background: var(--green); display: inline-block; }
 
 main { max-width: 1280px; margin: 0 auto; padding: 24px; }
-/* Charts tab uses the full width — wide charts, minimal side gutters. */
-body:has(#tab-charts.active) main { max-width: 1760px; padding: 20px 28px; }
+/* Charts tab uses the full width — wide charts, minimal side gutters (#4). */
+body:has(#tab-charts.active) main { max-width: 2240px; padding: 18px 20px; }
 .tabpane { display: none; grid-template-columns: 312px 1fr; gap: 24px; align-items: start; }
 .tabpane.active { display: grid; }
 
@@ -213,7 +213,8 @@ tbody tr:last-child td { border-bottom: none; }
 /* ============ Charts tab ============ */
 /* Full-width block flow (override the backtest tab's sidebar+content grid). */
 #tab-charts.active { display: block; }
-.charts-bar { margin-bottom: 14px; position: sticky; top: 64px; z-index: 6; }
+/* controls scroll away with the page (no longer sticky — it covered charts) */
+.charts-bar { margin-bottom: 14px; }
 .charts-controls {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
   background: color-mix(in srgb, var(--surface) 92%, transparent);
@@ -241,8 +242,10 @@ tbody tr:last-child td { border-bottom: none; }
 .sw.dot { width: 8px; height: 8px; border-radius: 50%; }
 .sw.arrow { width: auto; height: auto; font-size: 9px; letter-spacing: -1px; line-height: 1; }
 .primary.sm { width: auto; padding: 7px 16px; }
-.charts-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-@media (max-width: 1100px) { .charts-grid { grid-template-columns: 1fr; } }
+/* 3 charts per row (#4); step down only on genuinely narrow screens */
+.charts-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 1180px) { .charts-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .charts-grid { grid-template-columns: 1fr; } }
 .chart-card {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 12px 14px 6px;
@@ -401,15 +404,15 @@ main, .topbar { position: relative; z-index: 1; }
   border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
   box-shadow: inset 0 1px 0 color-mix(in srgb,#fff 5%,transparent), 0 14px 44px rgba(0,0,0,0.32);
 }
-.chart-card-head { margin-bottom: 12px; gap: 14px; align-items: baseline; }
+.chart-card-head { margin-bottom: 12px; gap: 8px 12px; align-items: baseline; flex-wrap: wrap; }
 .chart-card-head .sym {
   color: var(--text); font-weight: 700; font-size: 16px; letter-spacing: 0.3px;
   background: none; -webkit-text-fill-color: currentColor;
 }
 .chart-card-head .last { font-size: 14px; }
 
-/* taller, cleaner charts */
-.lwc { height: 420px; }
+/* taller, cleaner charts (slightly shorter so 3-up stays readable, #4) */
+.lwc { height: 384px; }
 
 .charts-controls {
   background: color-mix(in srgb, var(--surface) 88%, transparent);
@@ -458,4 +461,78 @@ button.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #fff); 
 .market-status .mkt-label { font-size: 12.5px; font-weight: 600; letter-spacing: -0.1px; color: var(--text); }
 .market-status.open .mkt-label { color: var(--green); }
 .market-status.closed .mkt-label { color: var(--muted); }
-.market-status .mkt-clock { font-size: 10.5px; color: var(--faint); font-family: var(--mono); letter-spacing: 0.3px; }
+/* widened to fit "Mon 6/16 · 14:32:07 ET" (#12) */
+.market-status .mkt-clock { font-size: 11px; color: var(--faint); font-family: var(--mono); letter-spacing: 0.3px; white-space: nowrap; }
+
+
+/* ============ ticker tape (#9) ============ */
+.ticker-tape {
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.ticker-tape .tape-track {
+  display: inline-flex; align-items: center; padding: 7px 0;
+  animation: tape-scroll 60s linear infinite; will-change: transform;
+}
+.ticker-tape:hover .tape-track { animation-play-state: paused; }
+@keyframes tape-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.tape-item {
+  display: inline-flex; align-items: baseline; gap: 7px; padding: 0 22px;
+  font-size: 12.5px; color: var(--muted); font-family: var(--mono);
+  border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+.tape-item b { color: var(--text); font-weight: 700; letter-spacing: 0.2px; }
+.tape-item em { font-style: normal; font-weight: 600; }
+.tape-item em.pos { color: var(--green); }
+.tape-item em.neg { color: var(--red); }
+
+
+/* ============ sort dropdown + expand-all button (#8, #10) ============ */
+.ghost-btn {
+  background: var(--surface-2); border: 1px solid var(--border-2); color: var(--muted);
+  padding: 6px 13px; border-radius: 7px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  font-family: inherit; transition: color .12s, border-color .12s, background .12s;
+}
+.ghost-btn:hover { color: var(--text); border-color: var(--accent); }
+
+
+/* ============ per-card day picker + metric chip (#6, #8) ============ */
+.chart-card-head .metric-chip {
+  font-size: 10.5px; font-weight: 600; font-family: var(--mono); color: var(--accent);
+  background: var(--accent-soft); border-radius: 6px; padding: 2px 8px;
+}
+.chart-card-head .day-pick {
+  margin-left: 8px; display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; color: var(--faint);
+}
+.chart-card-head .day-sel {
+  appearance: none; -webkit-appearance: none;
+  background-color: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border-2); border-radius: 6px;
+  padding: 3px 22px 3px 8px; font-size: 11px; font-family: inherit; font-weight: 500; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23939bab' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 7px center; background-size: 9px;
+}
+.chart-card-head .day-sel:hover { border-color: var(--accent); }
+.chart-card-head .day-sel:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.log-summary em { font-style: normal; font-weight: 600; }
+.log-summary em.pos { color: var(--green); }
+.log-summary em.neg { color: var(--red); }
+
+
+/* ============ directional blink on every update (#7) ============ */
+.chart-card.pulse-up { animation: pulse-up .75s ease-out; }
+.chart-card.pulse-down { animation: pulse-down .75s ease-out; }
+@keyframes pulse-up {
+  0% { box-shadow: inset 0 0 0 0 rgba(33,181,130,0); }
+  35% { box-shadow: inset 0 0 22px 0 rgba(33,181,130,0.16); border-color: color-mix(in srgb, var(--green) 45%, var(--border)); }
+  100% { box-shadow: inset 0 0 0 0 rgba(33,181,130,0); }
+}
+@keyframes pulse-down {
+  0% { box-shadow: inset 0 0 0 0 rgba(240,89,90,0); }
+  35% { box-shadow: inset 0 0 22px 0 rgba(240,89,90,0.16); border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
+  100% { box-shadow: inset 0 0 0 0 rgba(240,89,90,0); }
+}
