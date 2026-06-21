@@ -145,15 +145,23 @@ class BarStore:
         }
 
     def performance_summary(self) -> dict:
-        """Overall + per-symbol stats over the whole persisted trade log."""
+        """Overall + per-symbol stats over the whole persisted trade log, plus the
+        date range the log covers (first entry → last exit)."""
         with self._conn() as c:
             rows = c.execute("SELECT symbol, pnl, win FROM trade_log").fetchall()
+            lo, hi = c.execute(
+                "SELECT MIN(entry_ms), MAX(exit_ms) FROM trade_log"
+            ).fetchone() or (None, None)
         by_symbol: dict[str, list[tuple]] = {}
         for sym, pnl, win in rows:
             by_symbol.setdefault(sym, []).append((pnl, win))
         per = {sym: self._agg(r) for sym, r in by_symbol.items()}
         overall = self._agg([(pnl, win) for _, pnl, win in rows])
-        return {"overall": overall,
+        window = {
+            "from": datetime.fromtimestamp(lo / 1000).isoformat() if lo else None,
+            "to": datetime.fromtimestamp(hi / 1000).isoformat() if hi else None,
+        }
+        return {"overall": overall, "window": window,
                 "per_symbol": dict(sorted(per.items(), key=lambda kv: kv[1]["net_pnl"], reverse=True))}
 
     # ---- reads ----

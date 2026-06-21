@@ -460,6 +460,12 @@ function renderPerformance(perf) {
   const o = perf && perf.overall;
   if (!o || !o.trades) { panel.classList.add("hidden"); return; }
   panel.classList.remove("hidden");
+  // date range the trade log covers (first entry → last exit)
+  const w = perf.window || {};
+  const meta = $("perf-meta");
+  if (meta) meta.textContent = (w.from && w.to)
+    ? `${w.from.slice(0, 10)} → ${w.to.slice(0, 10)}`
+    : "persisted trade log";
   const pf = o.profit_factor == null ? "∞" : o.profit_factor.toFixed(2);
   const stat = (label, val, cls) =>
     `<div class="perf-stat"><span class="ps-label">${label}</span><span class="ps-val ${cls || ""}">${val}</span></div>`;
