@@ -85,7 +85,12 @@ class BarStore:
         return len(rows)
 
     def save_trades(self, symbol: str, round_trips: list) -> int:
-        """Upsert realized round-trips for a symbol (idempotent on entry+exit)."""
+        """Replace ``symbol``'s trade_log with these round-trips — an exact mirror
+        of the latest replay (atomic delete+insert). This matters for *intraday*
+        persistence: an open position is force-settled at the last bar, so its exit
+        marches forward each cycle; a plain upsert would leave stale rows, a full
+        replace doesn't. Idempotent. An empty replay is treated as a no-op (never
+        wipes a populated symbol on a transient empty result)."""
         rows = []
         for rt in round_trips:
             direction = "bull" if rt.right == "CALL" else "bear"
@@ -98,6 +103,7 @@ class BarStore:
         if not rows:
             return 0
         with self._lock, self._conn() as c:
+            c.execute("DELETE FROM trade_log WHERE symbol=?", (symbol,))
             c.executemany(
                 "INSERT OR REPLACE INTO trade_log VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", rows
             )

@@ -155,7 +155,10 @@ async def run_data_pipeline(settings: Settings | None = None) -> None:
             if market_hours(now) and provider is not None:
                 n = await ingest_underlying(settings.watchlist_symbols, periods,
                                             store=store, provider=provider, days=window)
-                logger.debug("pipeline ingested %d bars", n)
+                # Persist the trade log intraday too (not just after the close) so the
+                # performance panel reflects today's trades within one ingest cycle.
+                saved = await persist_trade_log(settings, store=store)
+                logger.debug("pipeline: ingested %d bars, persisted %d trades", n, saved)
                 await asyncio.sleep(interval)
             elif after_close(now) and last_eod != day_key(now):
                 if provider is not None:

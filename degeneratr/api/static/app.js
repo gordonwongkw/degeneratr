@@ -531,6 +531,7 @@ async function loadCharts() {
 
 // ============ LIVE MODE (poll during market hours) ============
 let liveTimer = null;
+let _lastPerfRefresh = 0;   // throttle the perf-panel refresh during live mode
 const LIVE_INTERVAL_MS = 20000;
 
 function setLiveUI(on) {
@@ -615,6 +616,9 @@ async function liveTick() {
     });
     reorderCards($("c-sort").value);
     renderTickerTape(sortCharts(data.charts, $("c-sort").value));
+    // refresh the performance panel intraday (throttled — the server persists
+    // the trade log roughly every ingest cycle, so 5 min is plenty)
+    if (Date.now() - _lastPerfRefresh > 300000) { _lastPerfRefresh = Date.now(); loadPerformance(); }
     const mkt = data.market_open ? "market open" : "market closed";
     $("charts-status").innerHTML =
       `<span class="live-pulse"></span> LIVE · updated ${now.toLocaleTimeString()} · ${mkt}` +

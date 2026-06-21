@@ -21,6 +21,16 @@ def create_app() -> FastAPI:
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
     )
 
+    # Render's load balancer probes /api/health every few seconds — keep those
+    # 200s out of the access log so real requests aren't drowned out.
+    class _DropHealthAccess(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            args = record.args
+            return not (isinstance(args, tuple) and len(args) >= 3
+                        and str(args[2]).startswith("/api/health"))
+
+    logging.getLogger("uvicorn.access").addFilter(_DropHealthAccess())
+
     app = FastAPI(title="degeneratr", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
