@@ -139,8 +139,15 @@ class PriceActionStrategy(Strategy):
         def col(series):
             return [None if pd.isna(v) else float(v) for v in series]
 
-        ef = ta.ema(close, length=self.ema_fast) if self.use_ema else pd.Series([pd.NA] * n)
-        es = ta.ema(close, length=self.ema_slow) if self.use_ema else pd.Series([pd.NA] * n)
+        # pandas_ta returns None when a column can't be computed (too few bars for
+        # the lookback — e.g. a thin live window). Coerce those to an all-NA series
+        # so charting degrades to "no line" instead of raising
+        # 'NoneType' object is not iterable.
+        na = pd.Series([pd.NA] * n, index=close.index)
+        _ser = lambda x: na if x is None else x  # noqa: E731
+
+        ef = _ser(ta.ema(close, length=self.ema_fast)) if self.use_ema else na
+        es = _ser(ta.ema(close, length=self.ema_slow)) if self.use_ema else na
         # Session-anchored VWAP: reset the running sums each trading day, the way
         # intraday VWAP actually works (a window-wide cumulative VWAP is anchored
         # to the start of history and is meaningless intraday).
@@ -150,7 +157,7 @@ class PriceActionStrategy(Strategy):
         vw = (tp * f["volume"]).groupby(day).cumsum() / cv.replace(0, pd.NA)
         macd_df = ta.macd(close, fast=self.macd_fast, slow=self.macd_slow, signal=self.macd_signal)
         hist = macd_df.iloc[:, 1] if macd_df is not None and not macd_df.empty else pd.Series([pd.NA] * n, index=close.index)
-        r = ta.rsi(close, length=self.rsi_len)
+        r = _ser(ta.rsi(close, length=self.rsi_len))
         bb = ta.bbands(close, length=self.bb_len, std=self.bb_std)
         if bb is not None and not bb.empty:
             bb_lower, bb_upper = bb.iloc[:, 0], bb.iloc[:, 2]
