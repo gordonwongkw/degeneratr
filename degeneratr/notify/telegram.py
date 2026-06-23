@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import urllib.error
 import urllib.request
 from typing import Optional
 
@@ -60,17 +61,24 @@ class TelegramNotifier:
         try:
             if requests is not None:
                 r = requests.post(url, json=payload, timeout=10)
-                ok = r.status_code == 200
-            else:
-                data = json.dumps(payload).encode()
-                req = urllib.request.Request(
-                    url, data=data, headers={"Content-Type": "application/json"}
-                )
+                if r.status_code != 200:
+                    # Telegram's body says exactly why (e.g. "chat not found",
+                    # "Unauthorized") — surface it instead of a bare status.
+                    logger.warning("Telegram send failed: HTTP %s — %s",
+                                   r.status_code, (r.text or "")[:300])
+                    return False
+                return True
+            data = json.dumps(payload).encode()
+            req = urllib.request.Request(
+                url, data=data, headers={"Content-Type": "application/json"}
+            )
+            try:
                 with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
-                    ok = resp.status == 200
-            if not ok:
-                logger.warning("Telegram send failed (status not 200)")
-            return ok
+                    return resp.status == 200
+            except urllib.error.HTTPError as he:
+                body = he.read().decode("utf-8", "replace")[:300]
+                logger.warning("Telegram send failed: HTTP %s — %s", he.code, body)
+                return False
         except Exception as exc:  # noqa: BLE001 - never let a notification crash the loop
             logger.warning("Telegram send error: %s", exc)
             return False
