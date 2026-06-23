@@ -117,6 +117,66 @@ def format_exit(symbol: str, t: dict) -> str:
     )
 
 
+def _strategy_overview() -> list[str]:
+    """Setup lines derived from the LIVE config (so the briefing never drifts)."""
+    import inspect
+
+    from ..backtester.underlying import UnderlyingBacktester
+    from ..strategies.price_action import PriceActionStrategy
+
+    s = PriceActionStrategy()
+    sig = inspect.signature(UnderlyingBacktester.__init__)
+    tp = sig.parameters["take_profit_pct"].default * 100
+    sl = sig.parameters["stop_loss_pct"].default * 100
+    inds = []
+    if s.use_ema:
+        inds.append(f"EMA {s.ema_fast}/{s.ema_slow}")
+    if s.use_vwap:
+        inds.append("VWAP")
+    if s.use_macd:
+        inds.append("MACD")
+    if s.use_rsi:
+        inds.append("RSI")
+    if s.use_bbands:
+        inds.append(f"Bollinger ({s.bb_mode})")
+    gate = f" + ADX({s.adx_len})≥{s.adx_min:.0f} gate" if s.adx_min > 0 else ""
+    return [
+        "\U0001F4CB Setup",
+        f"• Signal: {', '.join(inds)}",
+        f"• Trigger: ≥{s.min_score} confluence{gate}",
+        "• Timeframe: 15-minute bars",
+        f"• Exit: +{tp:.1f}% take-profit / -{sl:.1f}% stop",
+        "• Trade: 0DTE OTM call (bull) / put (bear)",
+        "• Window: 09:30–16:00 ET",
+    ]
+
+
+def format_market_open(charts: list[dict], day_label: str) -> str:
+    """Market-open briefing: watchlist ranked by pre-market gap (vs prior close),
+    the top name to watch, and a quick setup overview."""
+    rows = sorted(charts, key=lambda c: abs(c.get("day_change_pct", 0) or 0), reverse=True)
+    lines = [f"☀️ MARKET OPEN — {day_label}", ""]
+    if rows:
+        t = rows[0]
+        g = t.get("day_change_pct", 0) or 0
+        lines.append(
+            f"\U0001F440 Top watch: {t['symbol']}  "
+            f"({'+' if g >= 0 else ''}{g:.2f}% gap · ATR {t.get('atr_pct', 0) or 0:.2f}%)"
+        )
+        lines.append("")
+    lines.append("Pre-market — most active (vs prior close):")
+    for i, c in enumerate(rows):
+        g = c.get("day_change_pct", 0) or 0
+        atr = c.get("atr_pct", 0) or 0
+        bullet = "\U0001F525" if i < 2 else "•"
+        lines.append(f"{bullet} {c['symbol']} {'+' if g >= 0 else ''}{g:.2f}%  ·  ATR {atr:.2f}%")
+    lines.append("")
+    lines += _strategy_overview()
+    lines.append("")
+    lines.append("Live alerts on signals, entries & exits. Summary at the close. \U0001F340")
+    return "\n".join(lines)
+
+
 def format_eod_summary(charts: list[dict], day_label: str) -> str:
     lines = [f"📊 END-OF-DAY · {day_label}"]
     total_trades = total_net = total_wins = total_losses = 0

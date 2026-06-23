@@ -17,12 +17,13 @@ import asyncio
 import logging
 
 from ..config import Settings, get_settings
-from ..marketclock import after_close, day_key, market_hours, now_et
+from ..marketclock import OPEN_MIN, after_close, day_key, market_hours, minutes, now_et
 from .telegram import (
     TelegramNotifier,
     format_entry,
     format_eod_summary,
     format_exit,
+    format_market_open,
     format_signal,
 )
 
@@ -35,6 +36,7 @@ class _State:
     def __init__(self) -> None:
         self.day: str | None = None
         self.baselined = False
+        self.open_briefed = False
         self.eod_sent = False
         self.last_signal: dict[str, int] = {}      # symbol -> last signal epoch
         self.seen_trades: dict[str, set] = {}       # symbol -> {(n, entry, exit)}
@@ -43,6 +45,7 @@ class _State:
         if day != self.day:
             self.day = day
             self.baselined = False
+            self.open_briefed = False
             self.eod_sent = False
             self.last_signal.clear()
             self.seen_trades.clear()
@@ -100,15 +103,17 @@ async def run_watch_loop(settings: Settings | None = None, interval: float | Non
                     _diff_and_alert(data["charts"], st, notifier)  # silent baseline
                     st.baselined = True
                     logger.info("watcher baselined %d symbols", len(data["charts"]))
-                    # One confirmation ping when the watcher comes online for the
-                    # day — proves Telegram delivery works without waiting for a
-                    # signal (the baseline itself is silent by design).
                     if data["charts"]:
-                        syms = ", ".join(c["symbol"] for c in data["charts"])
-                        notifier.send(
-                            f"🟢 degeneratr live — watching {syms}.\n"
-                            "Alerts fire on new signals, entries/exits, and an end-of-day summary."
-                        )
+                        # Near the open → full market-open briefing (pre-market
+                        # movers + setup). A mid-day restart instead gets a light
+                        # heartbeat, so it doesn't falsely announce "market open".
+                        if not st.open_briefed and minutes(now) <= OPEN_MIN + 30:
+                            notifier.send(format_market_open(
+                                data["charts"], now.strftime("%a %b %d")))
+                            st.open_briefed = True
+                        else:
+                            syms = ", ".join(c["symbol"] for c in data["charts"])
+                            notifier.send(f"🟢 degeneratr live — watching {syms}.")
                 else:
                     n = _diff_and_alert(data["charts"], st, notifier)
                     if n:
