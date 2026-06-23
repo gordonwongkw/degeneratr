@@ -21,6 +21,7 @@ from typing import Optional
 from ..config import Settings, get_settings
 from ..data.base import Bar, BarPeriod, IVAnalysis, MarketDataProvider, OptionRight
 from ..data.factory import get_provider
+from ..marketclock import market_hours, now_et
 from ..risk.manager import RiskManager
 from ..strategies.base import Signal, Strategy
 from .engine import BacktestResult, RoundTrip
@@ -79,16 +80,18 @@ class UnderlyingBacktester:
         self._size_weights = size_weights
 
     def _session_lasts(self, bars: list[Bar]) -> set[int]:
-        """Indices that END a trading session: the next bar is on a different
-        calendar day (or there is no next bar). Detecting the boundary by DATE
-        rather than a fixed time gap means an intraday hole in the data (missing
-        bars — common with live/Tiger fetches) is no longer mislabeled as a
-        mid-day 'session_close'. On gap-free data this is identical to the old
-        >60-min-gap rule (the only >60-min gaps are overnight)."""
-        n = len(bars)
+        """Indices where a trading session ends *within the data* — i.e. the NEXT
+        bar is a different calendar day. Detecting the boundary by DATE (not a
+        fixed time gap) means an intraday hole in the data (missing bars — common
+        with live/Tiger fetches) isn't mislabeled as a mid-day 'session_close'.
+
+        The final bar is intentionally NOT included: it's the end of the data
+        *window*, not necessarily a session. A position still open there is settled
+        separately and flagged 'open' when it's the current live session (see the
+        settle step in :meth:`run`)."""
         out: set[int] = set()
-        for i in range(n):
-            if i + 1 >= n or bars[i + 1].time.date() != bars[i].time.date():
+        for i in range(len(bars) - 1):
+            if bars[i + 1].time.date() != bars[i].time.date():
                 out.add(i)
         return out
 
@@ -174,7 +177,11 @@ class UnderlyingBacktester:
                 pause_until = i + self._edge_cooldown
 
             # ---- entries ----
-            if not is_session_end and not self._risk.kill_switch_tripped() and i > pause_until:
+            # Don't open on the very last bar — it's no longer treated as a session
+            # end, so an entry there would be a zero-duration trade settled the same
+            # bar. (Matches the old behaviour, where the last bar blocked entries.)
+            if (not is_session_end and i < len(bars) - 1
+                    and not self._risk.kill_switch_tripped() and i > pause_until):
                 signals = await self._strategy.generate_signals(ticker, bars[: i + 1], [], empty_iv)
                 equity = cash + sum(
                     (spot - t.entry_price) * t.direction * t.shares for t in open_trades
@@ -201,13 +208,19 @@ class UnderlyingBacktester:
             )
             equity_curve.append((now, equity))
 
-        # settle open trades at the last bar
+        # Settle anything still open at the end of the data window. If that end is
+        # the CURRENT, still-running session (market open + data reaches today), the
+        # position is genuinely OPEN — flag it 'open' so the live trade log doesn't
+        # mislabel it as a mid-day 'session_close'. Otherwise (a historical window
+        # or after the close) it's a real end-of-day flatten.
         final = bars[-1]
+        _now = now_et()
+        end_reason = "open" if (market_hours(_now) and final.time.date() == _now.date()) else "session_close"
         for tr in open_trades:
             pnl = (final.close - tr.entry_price) * tr.direction * tr.shares
             cash += pnl
             realized += pnl
-            round_trips.append(self._round_trip(tr, final.time, final.close, pnl, "session_close"))
+            round_trips.append(self._round_trip(tr, final.time, final.close, pnl, end_reason))
 
         return BacktestResult(
             starting_cash=start_cash, ending_equity=cash, realized_pnl=realized,

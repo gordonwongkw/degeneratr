@@ -84,7 +84,10 @@ async def _persist_one(symbol: str, settings: Settings, store: BarStore) -> int:
         settings=settings, provider=_PreloadedProvider(symbol, bars),
     )
     result = await bt.run(symbol, bars[0].time, bars[-1].time, period=_SIGNAL_PERIOD)
-    return store.save_trades(symbol, result.round_trips)
+    # Persist only realized round-trips — an 'open' position is unrealized and would
+    # inflate the performance stats; it lands once it actually closes.
+    realized = [rt for rt in result.round_trips if rt.exit_reason != "open"]
+    return store.save_trades(symbol, realized)
 
 
 def _persist_blocking(settings: Settings, store: BarStore) -> int:
