@@ -272,14 +272,17 @@ async def _chart_for(symbol, candle_bars: list[Bar], strat_bars: list[Bar], stra
     # cleanest volatility proxy and the default ranking.
     atr_val = _atr_ind(bars_to_frame(strat_bars), 14) if len(strat_bars) >= 15 else None
     atr_pct = round(atr_val / last * 100, 3) if (atr_val and last) else 0.0
-    # Today's session change: from the first bar of the most recent trading day
-    # to the last price (distinct from change_pct, which spans the whole window).
+    # Daily % change vs the PREVIOUS session's close — the conventional figure
+    # brokers/quotes show — not vs today's open (which understates gaps). Falls
+    # back to today's open only when the window holds a single trading day.
     day_change_pct = 0.0
     if candle_bars:
         last_day = candle_bars[-1].time.date()
-        day_open = next((b.open for b in candle_bars if b.time.date() == last_day), None)
-        if day_open:
-            day_change_pct = round((last / day_open - 1) * 100, 2)
+        prior_closes = [b.close for b in candle_bars if b.time.date() < last_day]
+        baseline = prior_closes[-1] if prior_closes else next(
+            (b.open for b in candle_bars if b.time.date() == last_day), None)
+        if baseline:
+            day_change_pct = round((last / baseline - 1) * 100, 2)
     return {
         "symbol": symbol, "bars": len(candle_bars),
         "last": round(last, 2), "change_pct": round((last / first - 1) * 100, 2) if first else 0.0,
