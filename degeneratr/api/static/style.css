@@ -500,6 +500,10 @@ button.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #fff); 
 
 
 /* ============ per-card day picker + metric chip (#6, #8) ============ */
+.chart-card-head .hilo { font-family: var(--mono); font-size: 11px; color: var(--faint); white-space: nowrap; }
+.chart-card-head .hilo b { font-weight: 600; }
+.chart-card-head .hilo b.hi { color: var(--green); }
+.chart-card-head .hilo b.lo { color: var(--red); }
 .chart-card-head .metric-chip {
   font-size: 10.5px; font-weight: 600; font-family: var(--mono); color: var(--accent);
   background: var(--accent-soft); border-radius: 6px; padding: 2px 8px;

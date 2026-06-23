@@ -104,6 +104,37 @@ function tradeRowsHTML(trades) {
 }
 const tradesOnDay = (trades, key) => (key === "all" ? trades : trades.filter((t) => dayKey(t.entry_time) === key));
 
+// Candle bars belonging to the selected day (or the most recent day for "all").
+function selectedDayBars(entry) {
+  const data = entry.candle.data();
+  if (!data.length) return [];
+  const sel = entry.daySel.value;
+  const key = sel === "all" ? dayKey(data[data.length - 1].time) : sel;
+  return data.filter((b) => dayKey(b.time) === key);
+}
+// Draw/update the day's high & low as dashed price lines + a header readout.
+function updateDayHiLo(entry) {
+  const bars = selectedDayBars(entry);
+  if (!bars.length) return;
+  const hi = Math.max(...bars.map((b) => b.high));
+  const lo = Math.min(...bars.map((b) => b.low));
+  if (!entry.hiLine) {
+    entry.hiLine = entry.candle.createPriceLine({
+      price: hi, color: "rgba(33,181,130,0.55)", lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: "H",
+    });
+    entry.loLine = entry.candle.createPriceLine({
+      price: lo, color: "rgba(240,89,90,0.55)", lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: "L",
+    });
+  } else {
+    entry.hiLine.applyOptions({ price: hi });
+    entry.loLine.applyOptions({ price: lo });
+  }
+  const el = entry.card.querySelector(".hilo");
+  if (el) el.innerHTML = `H <b class="hi">${hi.toFixed(2)}</b> · L <b class="lo">${lo.toFixed(2)}</b>`;
+}
+
 // Refresh a card's trade log, summary line, entry→exit links and zoom for the
 // selected day (links are only drawn for this day's trades — cheap).
 function applyDay(entry) {
@@ -115,6 +146,7 @@ function applyDay(entry) {
     `Trade log — ${trades.length} round-trips · <em class="${net >= 0 ? "pos" : "neg"}">${money2(net)}</em>` +
     (sel === "all" ? "" : ` · ${dayLabel(entry.days.find((d) => d.key === sel)?.fromTime || 0)}`);
   buildLinks(entry, trades);
+  updateDayHiLo(entry);
   // Zoom the chart to the selected day (full series stays loaded; pan still works).
   if (sel !== "all") {
     const d = entry.days.find((x) => x.key === sel);
@@ -242,6 +274,7 @@ function makeChart(c, period) {
     `<div class="chart-card-head">
        <span class="sym">${c.symbol}</span>
        <span class="last">${money2(c.last)} <em class="chg ${chg}">${pct(c.day_change_pct)}</em></span>
+       <span class="hilo"></span>
        <span class="metric-chip">${metricChip(c)}</span>
        <span class="sig-count">${c.trades.length} trades · <em class="${netCls}">${money2(c.net_pnl)}</em></span>
        <label class="day-pick">Day <select class="day-sel"></select></label>
@@ -593,6 +626,7 @@ async function liveTick() {
       }
       applyToggles(e);
       if (tradesChanged || daysChanged) applyDay(e);
+      updateDayHiLo(e);   // track today's high/low as price moves intraday
 
       // header: live last price + today's change + metric chip
       const card = e.el.closest(".chart-card");
