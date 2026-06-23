@@ -79,11 +79,16 @@ class UnderlyingBacktester:
         self._size_weights = size_weights
 
     def _session_lasts(self, bars: list[Bar]) -> set[int]:
+        """Indices that END a trading session: the next bar is on a different
+        calendar day (or there is no next bar). Detecting the boundary by DATE
+        rather than a fixed time gap means an intraday hole in the data (missing
+        bars — common with live/Tiger fetches) is no longer mislabeled as a
+        mid-day 'session_close'. On gap-free data this is identical to the old
+        >60-min-gap rule (the only >60-min gaps are overnight)."""
         n = len(bars)
         out: set[int] = set()
         for i in range(n):
-            gap = (bars[i + 1].time - bars[i].time).total_seconds() / 60 if i + 1 < n else 1e9
-            if gap > self._gap_minutes:
+            if i + 1 >= n or bars[i + 1].time.date() != bars[i].time.date():
                 out.add(i)
         return out
 
