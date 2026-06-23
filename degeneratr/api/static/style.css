@@ -270,8 +270,8 @@ tbody tr:last-child td { border-bottom: none; }
   list-style: none; user-select: none;
 }
 .trade-log > summary::-webkit-details-marker { display: none; }
-.trade-log > summary::before { content: "B8  "; color: var(--faint); }
-.trade-log[open] > summary::before { content: "BE  "; }
+.trade-log > summary::before { content: "\25B8  "; color: var(--faint); }
+.trade-log[open] > summary::before { content: "\25BE  "; }
 .trade-log > summary:hover { color: var(--text); }
 .trade-log-wrap { max-height: 260px; overflow-y: auto; margin-top: 4px; }
 .trade-log-table { width: 100%; border-collapse: collapse; font-size: 11px; }
