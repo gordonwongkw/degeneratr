@@ -100,6 +100,15 @@ async def run_watch_loop(settings: Settings | None = None, interval: float | Non
                     _diff_and_alert(data["charts"], st, notifier)  # silent baseline
                     st.baselined = True
                     logger.info("watcher baselined %d symbols", len(data["charts"]))
+                    # One confirmation ping when the watcher comes online for the
+                    # day — proves Telegram delivery works without waiting for a
+                    # signal (the baseline itself is silent by design).
+                    if data["charts"]:
+                        syms = ", ".join(c["symbol"] for c in data["charts"])
+                        notifier.send(
+                            f"🟢 degeneratr live — watching {syms}.\n"
+                            "Alerts fire on new signals, entries/exits, and an end-of-day summary."
+                        )
                 else:
                     n = _diff_and_alert(data["charts"], st, notifier)
                     if n:
