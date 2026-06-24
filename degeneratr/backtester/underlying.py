@@ -21,7 +21,7 @@ from typing import Optional
 from ..config import Settings, get_settings
 from ..data.base import Bar, BarPeriod, IVAnalysis, MarketDataProvider, OptionRight
 from ..data.factory import get_provider
-from ..marketclock import market_hours, now_et
+from ..marketclock import CLOSE_MIN
 from ..risk.manager import RiskManager
 from ..strategies.base import Signal, Strategy
 from .engine import BacktestResult, RoundTrip
@@ -208,14 +208,14 @@ class UnderlyingBacktester:
             )
             equity_curve.append((now, equity))
 
-        # Settle anything still open at the end of the data window. If that end is
-        # the CURRENT, still-running session (market open + data reaches today), the
-        # position is genuinely OPEN — flag it 'open' so the live trade log doesn't
-        # mislabel it as a mid-day 'session_close'. Otherwise (a historical window
-        # or after the close) it's a real end-of-day flatten.
+        # Settle anything still open at the end of the data window. It's only a real
+        # end-of-day 'session_close' if the data actually reaches the bell (~15:45+
+        # ET). If the data ends mid-session — the live current bar, or a stale /
+        # truncated day — the position's true exit is unknown, so flag it 'open'
+        # rather than pretend it closed at the close.
         final = bars[-1]
-        _now = now_et()
-        end_reason = "open" if (market_hours(_now) and final.time.date() == _now.date()) else "session_close"
+        end_minute = final.time.hour * 60 + final.time.minute
+        end_reason = "session_close" if end_minute >= CLOSE_MIN - 20 else "open"
         for tr in open_trades:
             pnl = (final.close - tr.entry_price) * tr.direction * tr.shares
             cash += pnl

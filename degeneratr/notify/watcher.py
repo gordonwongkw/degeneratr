@@ -24,7 +24,6 @@ from .telegram import (
     format_eod_summary,
     format_exit,
     format_market_open,
-    format_signal,
 )
 
 logger = logging.getLogger("degeneratr.notify")
@@ -38,8 +37,8 @@ class _State:
         self.baselined = False
         self.open_briefed = False
         self.eod_sent = False
-        self.last_signal: dict[str, int] = {}      # symbol -> last signal epoch
-        self.seen_trades: dict[str, set] = {}       # symbol -> {(n, entry, exit)}
+        self.seen_entries: dict[str, set] = {}   # symbol -> {(n, entry_time)} alerted ENTRY
+        self.exited: dict[str, set] = {}          # symbol -> {(n, entry_time)} alerted EXIT
 
     def roll(self, day: str) -> None:
         if day != self.day:
@@ -47,37 +46,32 @@ class _State:
             self.baselined = False
             self.open_briefed = False
             self.eod_sent = False
-            self.last_signal.clear()
-            self.seen_trades.clear()
+            self.seen_entries.clear()
+            self.exited.clear()
 
 
 def _diff_and_alert(charts: list[dict], st: _State, notifier: TelegramNotifier) -> int:
-    """Emit alerts for new signals/trades. On the baseline poll, only record state
-    (no sends). Returns the number of messages sent."""
+    """Emit ENTRY when a trade first appears and EXIT when it first *closes*. Keyed
+    by the entry — so an 'open' position (whose mark-to-market exit moves every
+    poll) isn't re-alerted, and no EXIT fires until it actually closes. No signal
+    alerts. On the baseline poll, only record state (no sends). Returns sends."""
     sent = 0
     for c in charts:
         sym = c["symbol"]
-        sigs = c.get("signals", [])
-        trades = c.get("trades", [])
-        last_sig = st.last_signal.get(sym, 0)
-        seen = st.seen_trades.setdefault(sym, set())
-        if st.baselined:
-            for s in sigs:
-                if s["time"] > last_sig:
-                    if notifier.send(format_signal(sym, s)):
-                        sent += 1
-            for t in trades:
-                key = (t["n"], t["entry_time"], t["exit_time"])
-                if key not in seen:
-                    if notifier.send(format_entry(sym, t)):
-                        sent += 1
-                    if notifier.send(format_exit(sym, t)):
-                        sent += 1
-        # update state regardless (baseline records the current world silently)
-        if sigs:
-            st.last_signal[sym] = max(last_sig, max(s["time"] for s in sigs))
-        for t in trades:
-            seen.add((t["n"], t["entry_time"], t["exit_time"]))
+        seen = st.seen_entries.setdefault(sym, set())
+        exited = st.exited.setdefault(sym, set())
+        for t in c.get("trades", []):
+            ek = (t["n"], t["entry_time"])
+            closed = t.get("exit_reason") != "open"
+            if st.baselined:
+                if ek not in seen and notifier.send(format_entry(sym, t)):
+                    sent += 1
+                if closed and ek not in exited and notifier.send(format_exit(sym, t)):
+                    sent += 1
+            # update state regardless (baseline records the current world silently)
+            seen.add(ek)
+            if closed:
+                exited.add(ek)
     return sent
 
 
